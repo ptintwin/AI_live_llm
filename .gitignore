@@ -23,6 +23,7 @@ env/
 ENV/
 .venv/
 .env/
+.idea/
 env.bak/
 venv.bak/
 

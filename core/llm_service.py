@@ -6,6 +6,7 @@
 import os
 import asyncio
 from http import HTTPStatus
+from sys import prefix
 from typing import AsyncGenerator, Any
 import dashscope
 from dashscope import Generation
@@ -36,18 +37,19 @@ class LLMLiveService:
         self.background = background or config["live"]["default_background"]
         self.max_history = config["llm"]["max_history"]
         self.interrupt_flag = False  # 自然中断标志
-        self.history = [
+        self.fixed_prefix_history = [
             {
                 "role": "system",
                 "content": [
                     {
                         "type": "text",
                         "text": SYSTEM_PROMPT + self.background,
-                        "cache_control": {"type": "ephemeral"}  # 阿里百炼文档的上下文缓存策略
+                        "cache_control": {"type": "ephemeral"}
                     }
                 ]
             }
         ]
+        self.history = []
         self.user_focus = []  # 观众关注点（前3次循环纳入）
         self.cycle_count = 0  # 循环次数
 
@@ -57,8 +59,9 @@ class LLMLiveService:
         if len(assistant_msgs) > self.max_history:
             keep_assistant = assistant_msgs[-self.max_history:]
             # 重建历史（system + 用户消息 + 保留的assistant）
-            new_history = [self.history[0]]
-            for msg in self.history[1:]:
+            new_history = []
+            for msg in self.history:
+                # TODO 只限最近的assistant10轮以及和这10轮assistant相关的msg["role"]对话，而不是全量的非assistant对话
                 if msg["role"] != "assistant" or msg in keep_assistant:
                     new_history.append(msg)
             self.history = new_history
@@ -84,10 +87,10 @@ class LLMLiveService:
             # 打印历史记录的最后几条，用于调试
             for i, msg in enumerate(self.history[-3:]):
                 logger.debug(f"历史记录[{i}]: {msg['role']}: {msg['content'][:50]}...")
-
+            logger.info(f"self.history: {self.history}")
             responses = Generation.call(
                 model=config["llm"]["model_name"],
-                messages=self.history,
+                messages=self.fixed_prefix_history + self.history,
                 result_format="message",  # 消息格式输出
                 stream=True,
                 incremental_output=True,  # 关键：设置为True以获取增量输出，性能更佳
@@ -170,17 +173,26 @@ class LLMLiveService:
         async for chunk in self._stream_llm_response(prompt, is_interact=False):
             yield chunk
 
-    async def handle_interact(self, question: str) -> AsyncGenerator[str, Any]:
+    async def handle_interact(self, danmu_list: list) -> AsyncGenerator[str, Any]:
         """处理观众互动弹幕（自然中断后调用）"""
-        self.user_focus.append(question)
-        prompt = INTERACT_PROMPT.format(question=question)
+        # 构建弹幕摘要
+        danmu_summary = ""
+        for danmu in danmu_list:
+            username = getattr(danmu, 'username', '观众')
+            content = getattr(danmu, 'content', '')
+            danmu_type = getattr(danmu, 'type', '')
+            level = getattr(danmu, 'level', '')
+
+            prefix_map = {'question': f"【互动问题类-{level}】", 'gift': "【礼物类】", 'enter': "【进入直播间】",
+                          'follow': "【关注或点赞类】"}
+            suffix_pmt = f"观众‘{username}’：{content}\n" if danmu_type == 'question' else f"观众‘{username}’{content}\n"
+            danmu_summary += (prefix_map[danmu_type] + suffix_pmt)
+
+        prompt = INTERACT_PROMPT.format(danmu_summary=danmu_summary)
+        self.user_focus.append(prompt)
 
         async for chunk in self._stream_llm_response(prompt, is_interact=True):
             yield chunk
-
-    async def handle_welcome(self, username: str) -> str:
-        """处理观众进场欢迎"""
-        return WELCOME_PROMPT.format(username=username)
 
     def set_interrupt(self, flag: bool):
         """设置自然中断标志"""

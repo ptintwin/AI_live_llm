@@ -34,13 +34,27 @@ def test_live_danmu():
     resp = requests.post(f"{BASE_URL}/live_danmu", json={
         "session_id": session_id,
         "danmu_list": [
-            {
-                "username": "测试用户",
-                "content": "你是骗子吗",
-                "type": "question",
-                "level": "其它闲聊问题"
-            }
-        ]
+        {
+          "username": "王哥",
+          "content": "游戏怎么下载？",
+          "type": "question",
+          "level": "下载类问题"
+        },
+        {
+          "username": "李哥",
+          "content": "主播好厉害！",
+          "type": "question"
+        },
+        {
+          "username": "张哥",
+          "content": "给主播点赞了",
+          "type": "follow"
+        },
+        {
+            "username": "小飞飞",
+            "content": "来了",
+            "type": "enter"
+        }]
     })
     if resp.status_code == 200:
         print("弹幕处理回复：", resp.json())

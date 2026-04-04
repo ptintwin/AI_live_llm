@@ -40,6 +40,7 @@ class DanmuItem(BaseModel):
     username: str = Field(..., description="用户名")
     content: str = Field(..., description="弹幕内容")
     type: str = Field(..., description="弹幕类型")
+    level: str = Field("", description="问题类型级别，仅当type为question时有效")
 
 
 class LiveDanmuRequest(BaseModel):
@@ -130,7 +131,7 @@ async def start_stream(req: StartStreamRequest, background_tasks: BackgroundTask
     return {"session_id": session_id, "status": "started"}
 
 
-@app.post("/live_danmu", summary="直播间弹幕处理")
+@app.post("/live_danmu", summary="直播间弹幕互动")
 async def live_danmu(req: LiveDanmuRequest):
     session = SESSIONS.get(req.session_id)
     if not session:
@@ -141,7 +142,6 @@ async def live_danmu(req: LiveDanmuRequest):
 
     # 1. 立即设置LLM中断标志，停止生成新内容
     llm.set_interrupt(True)
-    # 等待一小段时间，确保当前正在处理的句子完成
     await asyncio.sleep(0.5)
 
     # 2. 准备处理互动回复
