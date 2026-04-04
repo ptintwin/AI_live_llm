@@ -1,0 +1,38 @@
+# 阿里云百炼配置
+dashscope:
+  api_key: "配置并读取环境变量DASHSCOPE_API_KEY"
+  region: "cn-beijing"
+
+# 大模型配置
+llm:
+  model_name: "qwen-plus-character"
+  max_history: 10  # 仅保留最近10次assistant对话
+  temperature: 0.85
+  stream: true
+  cache_control:
+    type: "ephemeral"  # 显式临时缓存
+
+# TTS语音配置
+tts:
+  enabled: true
+  model_name: "cosyvoice-v3.5-plus"
+  voice_id: "cosyvoice-v3.5-plus-myvoice-4f05316f1a664a4a8585d195557b0962" # 我的声音id：cosyvoice-v3.5-plus-myvoice-c4c173da4e0a48d3ad20ea041d65beaa
+  sample_rate: 16000
+  format: "wav"
+  stream: true
+
+# 直播配置
+live:
+  max_cycle_focus: 3  # 前3次循环纳入观众关注点
+  default_background: "你是一名激情的抖音游戏主播，正在讲解爆款仙侠手游，引导下载、充值、互动"
+
+# 阿里云OSS配置
+oss:
+  endpoint: "https://oss-cn-beijing.aliyuncs.com"
+  bucket: "lucastao"
+
+# 服务配置
+server:
+  host: "0.0.0.0"
+  port: 8000
+  log_level: "info"
