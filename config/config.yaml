@@ -16,7 +16,7 @@ llm:
 tts:
   enabled: true
   model_name: "cosyvoice-v3.5-plus"
-  voice_id: "cosyvoice-v3.5-plus-myvoice-4f05316f1a664a4a8585d195557b0962" # 我的声音id：cosyvoice-v3.5-plus-myvoice-c4c173da4e0a48d3ad20ea041d65beaa
+  voice_id: "cosyvoice-v3.5-plus-myvoice-a2751e0fe65743df84303b90ebeba951"
   sample_rate: 16000
   format: "wav"
   stream: true

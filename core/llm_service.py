@@ -51,6 +51,7 @@ class LLMLiveService:
         ]
         self.history = []
         self.cycle_count = 0  # 循环次数
+        self.user_focus_cycle = 0  # 循环生成中已"关注近期观众弹幕交互"的循环次数
 
     def _trim_history(self):
         """裁剪历史：仅保留最近指定次数的assistant对话及其相关的其他角色对话"""
@@ -90,12 +91,8 @@ class LLMLiveService:
         try:
             # 调用通义千问（流式+临时缓存+增量输出）
             logger.info(f"开始调用LLM：模型={config['llm']['model_name']}，self.history长度={len(self.history)}")
-
-            # 打印历史记录的最后几条，用于调试
-            for i, msg in enumerate(self.history[-3:]):
-                logger.debug(f"历史记录[{i}]: {msg['role']}: {msg['content'][:50]}...")
             logger.info(f"self.history: {self.history}")
-
+            # 如果最近的
             responses = await AioGeneration.call(
                 model=config["llm"]["model_name"],
                 messages=self.fixed_prefix_history + self.history,
@@ -188,9 +185,30 @@ class LLMLiveService:
 
         self.cycle_count += 1
         # 构建续讲Prompt
-        prompt = CONTINUE_PROMPT if self.cycle_count > 1 else ""
+        prompt = ""
+        max_focus_cycle = config["live"]["max_cycle_focus"]
+        if self.user_focus_cycle > max_focus_cycle:
+            # 超过了最大“照顾观众交互”轮次，置为0表示不再“照顾交互”
+            self.user_focus_cycle = 0
+        if self.cycle_count > 1:
+            prompt = CONTINUE_PROMPT
+            if self.user_focus_cycle > 0:
+                # 计算照顾度：值越小表示越近期，照顾度越高
+                focus_level = max_focus_cycle - self.user_focus_cycle + 1
+                if focus_level == max_focus_cycle:
+                    # 最近一次交互，最高照顾度
+                    prompt += "，【重要提醒】请优先重点结合最近的观众弹幕交互内容"
+                elif focus_level == max_focus_cycle - 1:
+                    # 较近的交互，较高照顾度
+                    prompt += "，【重要提醒】请适当结合近期观众弹幕交互内容"
+                else:
+                    # 较早的交互，较低照顾度
+                    prompt += "，【重要提醒】请参考早期观众弹幕交互内容"
         async for chunk in self._stream_llm_response(prompt, is_interact=False):
             yield chunk
+        if self.user_focus_cycle > 0:
+            # 值越大表示最新“观众交互”轮次越远，照顾程度越低
+            self.user_focus_cycle += 1
 
     async def handle_interact(self, danmu_list: list) -> AsyncGenerator[str, Any]:
         """处理观众互动弹幕（自然中断后调用）"""
@@ -210,6 +228,7 @@ class LLMLiveService:
         prompt = INTERACT_PROMPT.format(danmu_summary=danmu_summary)
         async for chunk in self._stream_llm_response(prompt, is_interact=True):
             yield chunk
+        self.user_focus_cycle = 1
 
     def set_interrupt(self, flag: bool):
         """设置自然中断标志"""
