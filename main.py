@@ -59,6 +59,8 @@ class VoiceCloneRequest(BaseModel):
 
 class TTSRequest(BaseModel):
     voice_id: str = Field(..., description="语音模型ID")
+    speech_rate: float = Field(1.0, description="语音语速，默认1.0")
+    pitch_rate: float = Field(1.0, description="语音音高，默认1.0")
     instruction: Optional[str] = Field(None, description="语音模型指令提示词")
     text: Optional[str] = Field(None, description="要合成语音的文本")
     save_mode: str = Field("local", description="合成文件的保存模式，'local'表示本地存储，upload表示上传到OSS")
@@ -253,7 +255,9 @@ async def tts_synthesis(req: TTSRequest):
         synthesizer_kwargs = {
             "model": config["tts"]["model_name"],
             "voice": req.voice_id,
-            "format": AudioFormat.WAV_22050HZ_MONO_16BIT
+            "format": AudioFormat.WAV_22050HZ_MONO_16BIT,
+            "speech_rate": req.speech_rate,
+            "pitch_rate": req.pitch_rate
         }
         if req.instruction:
             synthesizer_kwargs["instruction"] = req.instruction
