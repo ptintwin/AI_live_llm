@@ -37,14 +37,12 @@ def test_live_danmu():
         {
           "username": "王哥",
           "content": "游戏怎么下载？",
-          "type": "question",
-          "level": "下载类问题"
+          "type": "question"
         },
         {
           "username": "李哥",
           "content": "主播好厉害！",
-          "type": "question",
-          "level": "其它闲聊问题"
+          "type": "question"
         },
         {
           "username": "张哥",

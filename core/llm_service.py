@@ -5,12 +5,14 @@
 """
 import os
 import asyncio
+import time
 from http import HTTPStatus
 from typing import AsyncGenerator, Any
 import dashscope
 # from dashscope import Generation
 from dashscope.aigc.generation import AioGeneration
 from yaml import safe_load
+from core.danmu_service import DanmuService
 from config.prompts import SYSTEM_PROMPT, CONTINUE_PROMPT, INTERACT_PROMPT
 from utils.logger import logger
 
@@ -214,6 +216,29 @@ class LLMLiveService:
         """处理观众互动弹幕（自然中断后调用）"""
         # 构建弹幕摘要
         danmu_summary = ""
+
+        # 提取所有question类型的弹幕内容
+        question_contents = []
+        question_indices = []
+
+        for i, danmu in enumerate(danmu_list):
+            danmu_type = getattr(danmu, 'type', '')
+            if danmu_type == 'question':
+                content = getattr(danmu, 'content', '')
+                question_contents.append(content)
+                question_indices.append(i)
+
+        # 批量识别question类型弹幕的等级
+        if question_contents:
+            start_time = time.time()
+            levels = await DanmuService.identify_levels(question_contents)
+
+            # 将识别结果赋值给对应的弹幕
+            for i, level in zip(question_indices, levels):
+                setattr(danmu_list[i], 'level', level)
+            logger.info(f"识别弹幕等级耗时: {time.time() - start_time:.2f}秒")
+
+        # 构建弹幕摘要
         for danmu in danmu_list:
             username = getattr(danmu, 'username', '观众')
             content = getattr(danmu, 'content', '')

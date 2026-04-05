@@ -6,6 +6,7 @@
 import asyncio
 import uuid
 import os
+import time
 import traceback
 from datetime import datetime
 from fastapi import FastAPI, BackgroundTasks
@@ -13,6 +14,7 @@ from pydantic import BaseModel, Field
 from typing import Optional
 import uvicorn
 from yaml import safe_load
+from core.danmu_service import DanmuService
 from core.llm_service import LLMLiveService
 from core.tts_service import TTSLiveService
 from audio_design.voice_clone import create_voice, poll_voice_status
@@ -65,6 +67,10 @@ class TTSRequest(BaseModel):
     text: Optional[str] = Field(None, description="要合成语音的文本")
     save_mode: str = Field("local", description="合成文件的保存模式，'local'表示本地存储，upload表示上传到OSS")
 
+
+class DanmuLevelRequest(BaseModel):
+    content: str = Field(..., description="弹幕内容")
+    type: str = Field(..., description="弹幕类型")
 
 # ------------------- 核心接口 -------------------
 @app.get("/health_check", summary="服务健康检查")
