@@ -112,7 +112,7 @@ class TTSStreamCallback(ResultCallback):
 
                     # 超时保护：如果长时间没有新数据且已收到 on_complete，则强制完成
                     if self._is_playback_stalled():
-                        logger.warning("检测到播放停滞，强制完成")
+                        # logger.warning("检测到播放停滞，强制完成")
                         await self._set_completed_event()
                         # 不要 break，继续运行以处理后续音频
         except asyncio.CancelledError:
@@ -340,8 +340,8 @@ class TTSLiveService:
             cycle_count: 当前轮次，用于区分不同轮次的播报
         """
         if sentence:
-            logger.debug(f"当前第{cycle_count}轮次循环播报，添加到播报队列: {sentence}")
             self.loop_queue.put_nowait(sentence)
+            logger.info(f"当前第{cycle_count}轮次循环生成文本添加到播报队列，当前队列大小: {self.loop_queue.qsize()}")
 
     def get_loop_queue_size(self):
         """获取循环播报队列大小

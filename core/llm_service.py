@@ -6,12 +6,12 @@
 import os
 import asyncio
 from http import HTTPStatus
-from sys import prefix
 from typing import AsyncGenerator, Any
 import dashscope
-from dashscope import Generation
+# from dashscope import Generation
+from dashscope.aigc.generation import AioGeneration
 from yaml import safe_load
-from config.prompts import SYSTEM_PROMPT, CONTINUE_PROMPT, INTERACT_PROMPT, WELCOME_PROMPT
+from config.prompts import SYSTEM_PROMPT, CONTINUE_PROMPT, INTERACT_PROMPT
 from utils.logger import logger
 
 # 加载配置
@@ -76,10 +76,12 @@ class LLMLiveService:
         Yields:
             流式生成的文本片段，确保以完整句子为单位
         """
-        self.history.append({"role": "user", "content": prompt})
+        if prompt:
+            self.history.append({"role": "user", "content": prompt})
         self._trim_history()
 
         full_content = ""
+        chunk_count = 0  # 手动计数，替代 enumerate
         try:
             # 调用通义千问（流式+临时缓存+增量输出）
             logger.info(f"开始调用LLM：模型={config['llm']['model_name']}，历史记录长度={len(self.history)}")
@@ -88,7 +90,8 @@ class LLMLiveService:
             for i, msg in enumerate(self.history[-3:]):
                 logger.debug(f"历史记录[{i}]: {msg['role']}: {msg['content'][:50]}...")
             logger.info(f"self.history: {self.history}")
-            responses = Generation.call(
+
+            responses = await AioGeneration.call(
                 model=config["llm"]["model_name"],
                 messages=self.fixed_prefix_history + self.history,
                 result_format="message",  # 消息格式输出
@@ -98,7 +101,10 @@ class LLMLiveService:
             )
 
             logger.info("LLM调用成功，开始接收流式响应")
-            for i, resp in enumerate(responses):
+
+            # 修正：使用 async for 直接迭代，手动计数
+            async for resp in responses:
+                chunk_count += 1
                 if hasattr(resp, 'status_code') and resp.status_code != HTTPStatus.OK:
                     # 处理错误情况
                     error_msg = f"LLM请求失败: code={resp.code}, message={resp.message}"
@@ -109,34 +115,39 @@ class LLMLiveService:
 
                 if hasattr(resp, 'output') and resp.output and hasattr(resp.output, 'choices') and resp.output.choices:
                     chunk = resp.output.choices[0].message.content
-                    full_content += chunk
+                    if chunk:  # 检查 chunk 不为空
+                        full_content += chunk
 
-                    # 实时返回段落（按句子切割，自然断点）
-                    # 确保以完整句子为单位返回，以句号、感叹号或问号结尾
-                    sentence_endings = ["。", "！", "？"]
-                    if any(p in chunk for p in sentence_endings):
-                        # 检查是否有完整句子
-                        for ending in sentence_endings:
-                            if ending in full_content:
-                                # 找到最后一个句子结束符
-                                last_end_idx = full_content.rfind(ending)
-                                if last_end_idx != -1:
-                                    # 提取完整句子
-                                    complete_sentence = full_content[:last_end_idx + 1]
-                                    # 检查中断标志，在句子结束时检查
-                                    if not is_interact and self.interrupt_flag:
-                                        logger.info(f"会话{self.session_id}检测到中断标志，在句子结束后停止讲解")
-                                        yield complete_sentence
-                                        full_content = ""
-                                        break
-                                    else:
-                                        yield complete_sentence
-                                        full_content = full_content[last_end_idx + 1:].strip()
-                    # 定期检查中断标志，确保能够及时响应
-                    elif not is_interact and i % 3 == 0:  # 每3个响应检查一次
-                        if self.interrupt_flag:
-                            logger.info(f"会话{self.session_id}检测到中断标志，等待句子结束后停止讲解")
-                            # 继续累积内容，直到遇到标点
+                        # 实时返回段落（按句子切割，自然断点）
+                        # 确保以完整句子为单位返回，以句号、感叹号或问号结尾
+                        sentence_endings = ["。", "！", "？"]
+
+                        # 检查是否有句子结束符
+                        has_ending = any(ending in chunk for ending in sentence_endings)
+
+                        if has_ending:
+                            # 检查是否有完整句子
+                            for ending in sentence_endings:
+                                if ending in full_content:
+                                    # 找到最后一个句子结束符
+                                    last_end_idx = full_content.rfind(ending)
+                                    if last_end_idx != -1:
+                                        # 提取完整句子
+                                        complete_sentence = full_content[:last_end_idx + 1]
+                                        # 检查中断标志，在句子结束时检查
+                                        if not is_interact and self.interrupt_flag:
+                                            logger.info(f"会话{self.session_id}检测到中断标志，在句子结束后停止讲解")
+                                            yield complete_sentence
+                                            full_content = ""
+                                            break
+                                        else:
+                                            yield complete_sentence
+                                            full_content = full_content[last_end_idx + 1:].strip()
+                        # 定期检查中断标志，确保能够及时响应
+                        elif not is_interact and chunk_count % 3 == 0:  # 使用 chunk_count 替代 i
+                            if self.interrupt_flag:
+                                logger.info(f"会话{self.session_id}检测到中断标志，等待句子结束后停止讲解")
+                                # 继续累积内容，直到遇到标点
 
                 # 检查是否是最后一个包
                 if hasattr(resp, 'output') and resp.output and hasattr(resp.output, 'choices') and resp.output.choices:
@@ -150,9 +161,11 @@ class LLMLiveService:
                         logger.info(f"LLM{'互动' if is_interact else ''}流式响应结束")
                         break
 
+            # 处理剩余的累积内容
             if full_content:
                 self.history.append({"role": "assistant", "content": full_content})
                 yield full_content
+
         except Exception as e:
             import traceback
             logger.error(f"错误栈：{traceback.format_exc()}")
@@ -166,8 +179,10 @@ class LLMLiveService:
 
         self.cycle_count += 1
         # 构建续讲Prompt（前3次循环纳入观众关注点）
-        prompt = CONTINUE_PROMPT
-        if self.cycle_count <= config["live"]["max_cycle_focus"] and self.user_focus:
+        prompt = ""
+        if self.cycle_count > 1:
+            prompt = CONTINUE_PROMPT
+        if self.user_focus and self.cycle_count <= config["live"]["max_cycle_focus"]:
             prompt += f"，结合观众关注点：{'、'.join(self.user_focus)}"
 
         async for chunk in self._stream_llm_response(prompt, is_interact=False):

@@ -36,6 +36,7 @@ class StartStreamRequest(BaseModel):
     room_id: str = Field(..., description="直播间ID")
     background: str = Field("", description="当前直播间专属系统提示词")
 
+
 class DanmuItem(BaseModel):
     username: str = Field(..., description="用户名")
     content: str = Field(..., description="弹幕内容")
@@ -85,35 +86,50 @@ async def start_stream(req: StartStreamRequest, background_tasks: BackgroundTask
             # 启动TTS消费者任务
             if config["tts"]["enabled"]:
                 await tts_service.start_consumer()
-            # 循环讲解
+                # 等待TTS服务完全启动
+                await asyncio.sleep(1.0)
+
+            # 标记是否正在生成文本
+            is_generating = False
             while session_id in SESSIONS:
                 if llm_service.interrupt_flag:
                     await asyncio.sleep(0.5)
                     continue
-                # 检查循环播报队列大小，如果只剩一个元素，开始下一轮生成
-                if config["tts"]["enabled"] and tts_service.get_loop_queue_size() <= 1:
-                    # 流式生成段落并添加到队列
+
+                # 检查循环播报队列大小，如果小于等于3且不在生成中，开始下一轮生成
+                if config["tts"]["enabled"] and tts_service.get_loop_queue_size() <= 2 and not is_generating:
+                    # 流式生成段落并添加到队列（异步非阻塞）
                     logger.info(f"会话{session_id}开始第 {llm_service.cycle_count + 1} 轮循环讲解")
 
-                    # 实时流式生成句子并添加到队列
-                    async for sentence in llm_service.generate_stream_paragraph():
-                        # 检查中断标志
-                        if llm_service.interrupt_flag:
-                            logger.info(f"会话{session_id}检测到中断标志，停止当前轮次讲解")
-                            break
-                        # 添加到循环播报队列
-                        if config["tts"]["enabled"]:
-                            tts_service.add_to_loop_queue(sentence, llm_service.cycle_count)
-                        else:
-                            # 非TTS模式下直接显示
-                            await asyncio.sleep(0.5)
-                        # 检查中断标志，确保能够及时响应
-                        if llm_service.interrupt_flag:
-                            logger.info(f"会话{session_id}检测到中断标志，停止当前轮次讲解")
-                            break
-                else:
-                    # 队列还有足够的内容，等待一段时间
-                    await asyncio.sleep(1.0)
+                    # 创建异步任务来生成文本并添加到队列
+                    async def generate_and_add():
+                        nonlocal is_generating
+                        is_generating = True
+                        try:
+                            # 实时流式生成句子并添加到队列
+                            async for sentence in llm_service.generate_stream_paragraph():
+                                # 检查中断标志
+                                if llm_service.interrupt_flag:
+                                    logger.info(f"会话{session_id}检测到中断标志，停止当前轮次讲解")
+                                    break
+                                # 添加到循环播报队列
+                                if config["tts"]["enabled"]:
+                                    tts_service.add_to_loop_queue(sentence, llm_service.cycle_count)
+                                else:
+                                    # 非TTS模式下直接显示
+                                    await asyncio.sleep(0.5)
+                                # 检查中断标志，确保能够及时响应
+                                if llm_service.interrupt_flag:
+                                    logger.info(f"会话{session_id}检测到中断标志，停止当前轮次讲解")
+                                    break
+                        finally:
+                            is_generating = False
+
+                    # 启动后台任务
+                    asyncio.create_task(generate_and_add())
+
+                # 队列还有足够的内容，等待一段时间
+                await asyncio.sleep(1.0)
         except Exception as e:
             import traceback
             logger.error(f"会话{session_id}直播循环异常：{traceback.format_exc()}")
