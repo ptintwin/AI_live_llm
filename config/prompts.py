@@ -47,7 +47,7 @@ SYSTEM_PROMPT = """一、角色与核心身份定义
 同一段落内不得重复相同句式、相同用词，避免话术同质化，每一轮生成的话术都需在核心卖点不变的基础上，完成表达形式的创新，规避平台循环录播判定。"""
 
 # 当前直播间临时替换RAG描述Prompt
-CURRENT_LIVE_ROOM_PROMPT = ""
+CURRENT_LIVE_ROOM_PROMPT = "你是一名激情的抖音游戏主播，正在讲解爆款仙侠手游，引导下载、充值、互动"
 
 # 直播开场Prompt
 START_LIVE_PROMPT = ""

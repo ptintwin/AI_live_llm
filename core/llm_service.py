@@ -13,7 +13,7 @@ import dashscope
 from dashscope.aigc.generation import AioGeneration
 from yaml import safe_load
 from core.danmu_service import DanmuService
-from config.prompts import SYSTEM_PROMPT, CONTINUE_PROMPT, INTERACT_PROMPT
+from config.prompts import SYSTEM_PROMPT, CURRENT_LIVE_ROOM_PROMPT, CONTINUE_PROMPT, INTERACT_PROMPT
 from utils.logger import logger
 
 # 加载配置
@@ -36,7 +36,7 @@ class LLMLiveService:
             background: 背景信息，用于系统提示
         """
         self.session_id = session_id
-        self.background = background or config["live"]["default_background"]
+        self.background = background if background else CURRENT_LIVE_ROOM_PROMPT
         self.max_history = config["llm"]["max_history"]
         self.interrupt_flag = False  # 自然中断标志
         self.fixed_prefix_history = [
@@ -45,8 +45,12 @@ class LLMLiveService:
                 "content": [
                     {
                         "type": "text",
-                        "text": SYSTEM_PROMPT + self.background,
+                        "text": SYSTEM_PROMPT,
                         "cache_control": {"type": "ephemeral"}
+                    },
+                    {
+                        "type": "text",
+                        "text": f"【当前直播间专属背景信息】{self.background}"
                     }
                 ]
             }

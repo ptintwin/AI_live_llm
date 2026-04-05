@@ -105,7 +105,7 @@ async def start_stream(req: StartStreamRequest, background_tasks: BackgroundTask
                     continue
 
                 # 检查循环播报队列大小，如果小于等于3且不在生成中，开始下一轮生成
-                if config["tts"]["enabled"] and tts_service.get_loop_queue_size() <= 2 and not is_generating:
+                if config["tts"]["enabled"] and tts_service.get_loop_queue_size() <= 3 and not is_generating:
                     # 流式生成段落并添加到队列（异步非阻塞）
                     logger.info(f"会话{session_id}开始第 {llm_service.cycle_count + 1} 轮循环讲解")
 
