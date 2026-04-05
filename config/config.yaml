@@ -6,7 +6,7 @@ dashscope:
 # 大模型配置
 llm:
   model_name: "qwen-plus-character"
-  max_history: 10  # 仅保留最近10次assistant对话
+  max_history: 5  # 短期记忆对话轮次
   temperature: 0.85
   stream: true
   cache_control:

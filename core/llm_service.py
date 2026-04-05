@@ -50,21 +50,25 @@ class LLMLiveService:
             }
         ]
         self.history = []
-        self.user_focus = []  # 观众关注点（前3次循环纳入）
         self.cycle_count = 0  # 循环次数
 
     def _trim_history(self):
-        """裁剪历史：仅保留最近指定次数的assistant对话"""
-        assistant_msgs = [m for m in self.history if m["role"] == "assistant"]
-        if len(assistant_msgs) > self.max_history:
-            keep_assistant = assistant_msgs[-self.max_history:]
-            # 重建历史（system + 用户消息 + 保留的assistant）
-            new_history = []
-            for msg in self.history:
-                # TODO 只限最近的assistant10轮以及和这10轮assistant相关的msg["role"]对话，而不是全量的非assistant对话
-                if msg["role"] != "assistant" or msg in keep_assistant:
-                    new_history.append(msg)
-            self.history = new_history
+        """裁剪历史：仅保留最近指定次数的assistant对话及其相关的其他角色对话"""
+        assistant_indices = [i for i, m in enumerate(self.history) if m["role"] == "assistant"]
+        if len(assistant_indices) > self.max_history:
+            start_idx = assistant_indices[-self.max_history]
+            self.history = self.history[start_idx:]
+
+            # 检查是否需要保留起始索引之前的最后一条非assistant消息（如果存在）
+            if start_idx > 0 and self.history[0]["role"] != "assistant":
+                pass  # 已经包含在切片中了
+            elif start_idx > 0:
+                # 如果起始索引之前有非assistant消息，需要保留
+                prev_msgs = self.history[:start_idx]
+                non_assistant_prev = [m for m in prev_msgs if m["role"] != "assistant"]
+                if non_assistant_prev:
+                    # 保留最后一条非assistant消息
+                    self.history = [non_assistant_prev[-1]] + self.history
 
     async def _stream_llm_response(self, prompt: str, is_interact: bool = False) -> AsyncGenerator[str, Any]:
         """通用LLM流式响应处理
@@ -81,10 +85,11 @@ class LLMLiveService:
         self._trim_history()
 
         full_content = ""
+        assistant_content = ""  # 保存完整的assistant响应
         chunk_count = 0  # 手动计数，替代 enumerate
         try:
             # 调用通义千问（流式+临时缓存+增量输出）
-            logger.info(f"开始调用LLM：模型={config['llm']['model_name']}，历史记录长度={len(self.history)}")
+            logger.info(f"开始调用LLM：模型={config['llm']['model_name']}，self.history长度={len(self.history)}")
 
             # 打印历史记录的最后几条，用于调试
             for i, msg in enumerate(self.history[-3:]):
@@ -99,7 +104,6 @@ class LLMLiveService:
                 incremental_output=True,  # 关键：设置为True以获取增量输出，性能更佳
                 temperature=config["llm"]["temperature"]
             )
-
             logger.info("LLM调用成功，开始接收流式响应")
 
             # 修正：使用 async for 直接迭代，手动计数
@@ -117,6 +121,7 @@ class LLMLiveService:
                     chunk = resp.output.choices[0].message.content
                     if chunk:  # 检查 chunk 不为空
                         full_content += chunk
+                        assistant_content += chunk  # 累积完整的assistant响应
 
                         # 实时返回段落（按句子切割，自然断点）
                         # 确保以完整句子为单位返回，以句号、感叹号或问号结尾
@@ -163,8 +168,12 @@ class LLMLiveService:
 
             # 处理剩余的累积内容
             if full_content:
-                self.history.append({"role": "assistant", "content": full_content})
                 yield full_content
+
+            # 保存完整的assistant响应到历史记录
+            if assistant_content:
+                self.history.append({"role": "assistant", "content": assistant_content})
+                logger.info(f"保存assistant响应到历史记录，长度: {len(assistant_content)}")
 
         except Exception as e:
             import traceback
@@ -178,13 +187,8 @@ class LLMLiveService:
             return
 
         self.cycle_count += 1
-        # 构建续讲Prompt（前3次循环纳入观众关注点）
-        prompt = ""
-        if self.cycle_count > 1:
-            prompt = CONTINUE_PROMPT
-        if self.user_focus and self.cycle_count <= config["live"]["max_cycle_focus"]:
-            prompt += f"，结合观众关注点：{'、'.join(self.user_focus)}"
-
+        # 构建续讲Prompt
+        prompt = CONTINUE_PROMPT if self.cycle_count > 1 else ""
         async for chunk in self._stream_llm_response(prompt, is_interact=False):
             yield chunk
 
@@ -204,8 +208,6 @@ class LLMLiveService:
             danmu_summary += (prefix_map[danmu_type] + suffix_pmt)
 
         prompt = INTERACT_PROMPT.format(danmu_summary=danmu_summary)
-        self.user_focus.append(prompt)
-
         async for chunk in self._stream_llm_response(prompt, is_interact=True):
             yield chunk
 

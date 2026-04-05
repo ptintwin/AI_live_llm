@@ -43,7 +43,8 @@ def test_live_danmu():
         {
           "username": "李哥",
           "content": "主播好厉害！",
-          "type": "question"
+          "type": "question",
+          "level": "其它闲聊问题"
         },
         {
           "username": "张哥",

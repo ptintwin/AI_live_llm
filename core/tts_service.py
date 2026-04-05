@@ -341,7 +341,7 @@ class TTSLiveService:
         """
         if sentence:
             self.loop_queue.put_nowait(sentence)
-            logger.info(f"当前第{cycle_count}轮次循环生成文本添加到播报队列，当前队列大小: {self.loop_queue.qsize()}")
+            logger.info(f"当前第{cycle_count}轮次循环生成文本添加到播报队列成功，当前队列大小: {self.loop_queue.qsize()}")
 
     def get_loop_queue_size(self):
         """获取循环播报队列大小
