@@ -43,7 +43,6 @@ class DanmuItem(BaseModel):
     username: str = Field(..., description="用户名")
     content: str = Field(..., description="弹幕内容")
     type: str = Field(..., description="弹幕类型")
-    level: str = Field("", description="问题类型级别，仅当type为question时有效")
 
 
 class LiveDanmuRequest(BaseModel):

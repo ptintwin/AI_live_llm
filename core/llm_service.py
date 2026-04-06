@@ -50,7 +50,7 @@ class LLMLiveService:
                     },
                     {
                         "type": "text",
-                        "text": f"【当前直播间专属背景信息】{self.background}"
+                        "text": f"【当前直播间背景信息】{self.background}"
                     }
                 ]
             }
@@ -64,6 +64,8 @@ class LLMLiveService:
         assistant_indices = [i for i, m in enumerate(self.history) if m["role"] == "assistant"]
         if len(assistant_indices) > self.max_history:
             start_idx = assistant_indices[-self.max_history]
+            # 保存原始历史记录的副本，用于获取起始索引之前的消息
+            original_history = self.history.copy()
             self.history = self.history[start_idx:]
 
             # 检查是否需要保留起始索引之前的最后一条非assistant消息（如果存在）
@@ -71,7 +73,8 @@ class LLMLiveService:
                 pass  # 已经包含在切片中了
             elif start_idx > 0:
                 # 如果起始索引之前有非assistant消息，需要保留
-                prev_msgs = self.history[:start_idx]
+                # 使用原始历史记录来获取起始索引之前的消息
+                prev_msgs = original_history[:start_idx]
                 non_assistant_prev = [m for m in prev_msgs if m["role"] != "assistant"]
                 if non_assistant_prev:
                     # 保留最后一条非assistant消息
@@ -122,9 +125,8 @@ class LLMLiveService:
 
                 if hasattr(resp, 'output') and resp.output and hasattr(resp.output, 'choices') and resp.output.choices:
                     chunk = resp.output.choices[0].message.content
-                    if chunk:  # 检查 chunk 不为空
+                    if chunk:
                         full_content += chunk
-                        assistant_content += chunk  # 累积完整的assistant响应
 
                         # 实时返回段落（按句子切割，自然断点）
                         # 确保以完整句子为单位返回，以句号、感叹号或问号结尾
@@ -142,6 +144,7 @@ class LLMLiveService:
                                     if last_end_idx != -1:
                                         # 提取完整句子
                                         complete_sentence = full_content[:last_end_idx + 1]
+                                        assistant_content += complete_sentence
                                         # 检查中断标志，在句子结束时检查
                                         if not is_interact and self.interrupt_flag:
                                             logger.info(f"会话{self.session_id}检测到中断标志，在句子结束后停止讲解")
@@ -171,6 +174,7 @@ class LLMLiveService:
 
             # 处理剩余的累积内容
             if full_content:
+                assistant_content += full_content
                 yield full_content
 
             # 保存完整的assistant响应到历史记录
@@ -221,36 +225,13 @@ class LLMLiveService:
         # 构建弹幕摘要
         danmu_summary = ""
 
-        # 提取所有question类型的弹幕内容
-        question_contents = []
-        question_indices = []
-
-        for i, danmu in enumerate(danmu_list):
-            danmu_type = getattr(danmu, 'type', '')
-            if danmu_type == 'question':
-                content = getattr(danmu, 'content', '')
-                question_contents.append(content)
-                question_indices.append(i)
-
-        # 批量识别question类型弹幕的等级
-        if question_contents:
-            start_time = time.time()
-            levels = await DanmuService.identify_levels(question_contents)
-
-            # 将识别结果赋值给对应的弹幕
-            for i, level in zip(question_indices, levels):
-                setattr(danmu_list[i], 'level', level)
-            logger.info(f"识别弹幕等级耗时: {time.time() - start_time:.2f}秒")
-
         # 构建弹幕摘要
         for danmu in danmu_list:
             username = getattr(danmu, 'username', '观众')
             content = getattr(danmu, 'content', '')
             danmu_type = getattr(danmu, 'type', '')
-            level = getattr(danmu, 'level', '')
 
-            prefix_map = {'question': f"【互动问题类-{level}】", 'gift': "【礼物类】", 'enter': "【进入直播间】",
-                          'follow': "【关注或点赞类】"}
+            prefix_map = {'question': "【互动问题类】", 'gift': "【礼物类】", 'enter': "【进入直播间】", 'follow': "【关注或点赞类】"}
             suffix_pmt = f"观众‘{username}’：{content}\n" if danmu_type == 'question' else f"观众‘{username}’{content}\n"
             danmu_summary += (prefix_map[danmu_type] + suffix_pmt)
 

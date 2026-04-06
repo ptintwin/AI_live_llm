@@ -45,14 +45,19 @@ def test_live_danmu():
           "type": "question"
         },
         {
-          "username": "张哥",
-          "content": "给主播点赞了",
-          "type": "follow"
+          "username": "大英雄",
+          "content": "点亮了粉丝灯牌",
+          "type": "gift"
         },
         {
             "username": "小飞飞",
             "content": "来了",
             "type": "enter"
+        },
+        {
+            "username": "土豪哥",
+            "content": "送出了豪华游艇！",
+            "type": "gift"
         }]
     })
     if resp.status_code == 200:

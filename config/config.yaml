@@ -19,6 +19,8 @@ tts:
   voice_id: "cosyvoice-v3.5-plus-myvoice-a2751e0fe65743df84303b90ebeba951"
   sample_rate: 16000
   format: "wav"
+  speech_rate: 1.2
+  pitch_rate: 1.0
   stream: true
 
 # 直播配置

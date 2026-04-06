@@ -6,6 +6,7 @@ CosyVoice流式TTS服务
 import os
 import time
 import asyncio
+import traceback
 import dashscope
 from dashscope.audio.tts_v2 import SpeechSynthesizer, AudioFormat, ResultCallback
 from yaml import safe_load
@@ -204,6 +205,8 @@ class TTSLiveService:
                 model=config["tts"]["model_name"],
                 voice=config["tts"]["voice_id"],
                 format=AudioFormat.PCM_22050HZ_MONO_16BIT,  # 流式调用推荐格式
+                speech_rate=config["tts"]["speech_rate"],
+                pitch_rate=config["tts"]["pitch_rate"],
                 callback=self.callback,
                 instruction=TTS_INSTRUCTION
             )
@@ -229,7 +232,7 @@ class TTSLiveService:
                 logger.info(f"会话{self.session_id}TTS synthesizer启动成功（第{retry + 1}次尝试）")
                 return
             except Exception as e:
-                logger.error(f"启动TTS synthesizer失败（尝试 {retry + 1}/{max_retries}）: {e}")
+                logger.error(f"启动TTS synthesizer失败（尝试 {retry + 1}/{max_retries}）: {traceback.print_exc()}")
                 if retry < max_retries - 1:
                     await asyncio.sleep(retry_delay * (retry + 1))  # 指数退避
                 else:
