@@ -332,8 +332,8 @@ class TTSLiveService:
             sentence: 要合成的文本
         """
         if sentence:
-            logger.info(f"添加到观众交互队列: {sentence}")
             self.interact_queue.put_nowait(sentence)
+            logger.info(f"推送观众交互队列成功，当前队列大小: {self.interact_queue.qsize()}")
 
     def add_to_loop_queue(self, sentence: str, cycle_count: int):
         """添加文本到循环播报队列

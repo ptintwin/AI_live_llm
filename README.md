@@ -18,10 +18,8 @@
 ```
 AI_live_llm/
 ├── audio_design/       # 语音克隆相关
-├── audio_output/       # 音频输出目录
 ├── config/             # 配置文件
 ├── core/               # 核心服务（LLM和TTS）
-├── logs/               # 日志文件
 ├── test/               # 测试文件
 ├── utils/              # 工具函数
 ├── README.md           # 项目说明文档

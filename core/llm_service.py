@@ -4,6 +4,7 @@
 满足：临时缓存、历史记录限制、段落流式生成、自然中断、循环续讲
 """
 import os
+import re
 import asyncio
 import time
 from http import HTTPStatus
@@ -144,6 +145,14 @@ class LLMLiveService:
                                     if last_end_idx != -1:
                                         # 提取完整句子
                                         complete_sentence = full_content[:last_end_idx + 1]
+
+                                        # 处理标签：使用正则表达式判断并拆分标签
+                                        match = re.match(r'^【([^】]+)】', complete_sentence)
+                                        if match:
+                                            tag = match.group(1) # TODO: 标签需要根据优先级排序，高优先级先回答
+                                            complete_sentence = complete_sentence[match.end():].strip()
+                                        logger.info(f"complete_sentence: {complete_sentence}")
+
                                         assistant_content += complete_sentence
                                         # 检查中断标志，在句子结束时检查
                                         if not is_interact and self.interrupt_flag:
@@ -225,13 +234,14 @@ class LLMLiveService:
         # 构建弹幕摘要
         danmu_summary = ""
 
-        # 构建弹幕摘要
-        for danmu in danmu_list:
+        # 构建弹幕摘要，按时间顺序从新到旧处理
+        for danmu in danmu_list[::-1]:
             username = getattr(danmu, 'username', '观众')
             content = getattr(danmu, 'content', '')
             danmu_type = getattr(danmu, 'type', '')
 
-            prefix_map = {'question': "【互动问题类】", 'gift': "【礼物类】", 'enter': "【进入直播间】", 'follow': "【关注或点赞类】"}
+            prefix_map = {'question': "【互动问题类】", 'gift': "【礼物灯牌类】", 'enter': "【进入直播间】",
+                          'follow': "【关注或点赞类】"}
             suffix_pmt = f"观众‘{username}’：{content}\n" if danmu_type == 'question' else f"观众‘{username}’{content}\n"
             danmu_summary += (prefix_map[danmu_type] + suffix_pmt)
 

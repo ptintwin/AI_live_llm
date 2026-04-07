@@ -58,7 +58,7 @@ class DanmuService:
                 # 解析返回结果，确保每条弹幕都有对应的等级
                 lines = result.strip().split('\n')
                 levels = []
-                valid_levels = ["充值类问题", "专业提问类", "下载类问题", "游戏相关普通问题", "其它闲聊问题"]
+                valid_levels = ["充值类问题", "下载类问题", "礼物类", "专业提问类", "游戏相关普通问题", "其它闲聊问题", "关注或点赞类", "进入直播间类"]
 
                 for line in lines:
                     # 提取等级类型

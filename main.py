@@ -148,6 +148,7 @@ async def start_stream(req: StartStreamRequest, background_tasks: BackgroundTask
     SESSIONS[session_id] = {
         "llm": llm_service,
         "tts": tts_service,
+        "danmu_cache": [],
         "task": task
     }
 
@@ -169,8 +170,7 @@ async def live_danmu(req: LiveDanmuRequest):
 
     # 2. 准备处理互动回复
     full_answer = ""
-    # 清空循环播报队列，确保优先处理互动内容
-    tts.clear_loop_queue()
+    loop_queue_cleared = False
 
     logger.info(f"开始处理弹幕请求：{req.danmu_list}")
     async for sentence in llm.handle_interact(req.danmu_list):
@@ -178,6 +178,10 @@ async def live_danmu(req: LiveDanmuRequest):
         if config["tts"]["enabled"]:
             # 添加到观众交互队列
             tts.add_to_interact_queue(sentence)
+            if not loop_queue_cleared and not tts.interact_queue.empty():
+                # 只有在互动队列不为空时才清空循环播报队列，避免两个队列都为空，播报停滞
+                tts.clear_loop_queue()
+                loop_queue_cleared = True
         else:
             logger.info(f"互动回复: {sentence}")
 
