@@ -43,6 +43,8 @@ class DanmuItem(BaseModel):
     username: str = Field(..., description="用户名")
     content: str = Field(..., description="弹幕内容")
     type: str = Field(..., description="弹幕类型")
+    level: Optional[str] = Field(None, description="弹幕等级：mandatory（必播）、important（重要）、normal（一般）")
+    timestamp: float = Field(default_factory=time.time, description="弹幕时间戳")
 
 
 class LiveDanmuRequest(BaseModel):
@@ -70,6 +72,7 @@ class TTSRequest(BaseModel):
 class DanmuLevelRequest(BaseModel):
     content: str = Field(..., description="弹幕内容")
     type: str = Field(..., description="弹幕类型")
+
 
 # ------------------- 核心接口 -------------------
 @app.get("/health_check", summary="服务健康检查")
@@ -163,29 +166,93 @@ async def live_danmu(req: LiveDanmuRequest):
 
     llm: LLMLiveService = session["llm"]
     tts: TTSLiveService = session["tts"]
+    danmu_service = DanmuService()
 
-    # 1. 立即设置LLM中断标志，停止生成新内容
-    llm.set_interrupt(True)
-    await asyncio.sleep(0.5)
+    # 1. 处理新传入的弹幕，添加等级信息
+    processed_danmu_list = []
+    # 收集所有问题类型的弹幕
+    question_danmus, non_question_danmus = danmu_service.process_danmu_list(req.danmu_list)
 
-    # 2. 准备处理互动回复
+    if question_danmus:
+        # 批量识别问题类型弹幕的等级
+        question_contents = [danmu.content for danmu in question_danmus]
+        # 调用DanmuService的identify_levels方法
+        levels = await danmu_service.identify_levels(question_contents)
+        # 为问题类型弹幕添加等级
+        for i, danmu in enumerate(question_danmus):
+            level = danmu_service.map_level_to_standard(levels[i])
+            processed_danmu = DanmuItem(
+                username=danmu.username,
+                content=danmu.content,
+                type=danmu.type,
+                level=level,
+                timestamp=time.time()
+            )
+            processed_danmu_list.append(processed_danmu)
+
+    # 处理非问题类型的弹幕
+    for danmu in non_question_danmus:
+        # 非问题类型弹幕的默认等级
+        if danmu.type in ["gift", "follow"]:
+            level = "important"
+        else:
+            level = "normal"
+        # 创建新的DanmuItem，添加等级和时间戳
+        processed_danmu = DanmuItem(
+            username=danmu.username,
+            content=danmu.content,
+            type=danmu.type,
+            level=level,
+            timestamp=time.time()
+        )
+        processed_danmu_list.append(processed_danmu)
+
+    # 2. 更新danmu_cache
+    session["danmu_cache"] = danmu_service.update_danmu_cache(session["danmu_cache"], processed_danmu_list)
+
+    # 3. 检查是否需要中断当前处理
+    # 确定当前最高等级的弹幕
+    max_level = danmu_service.get_max_level(session["danmu_cache"])
+
+    # 检查当前是否有必播句正在生成或播放
+    has_mandatory = danmu_service.check_mandatory_in_progress(llm)
+
+    # 如果有高等级弹幕，设置中断
+    if max_level != "normal" and not has_mandatory:
+        llm.set_interrupt(True)
+        await asyncio.sleep(0.5)
+        # 清空非必播队列
+        tts.clear_interact_queues()
+
+    # 4. 准备处理互动回复
     full_answer = ""
     loop_queue_cleared = False
 
-    logger.info(f"开始处理弹幕请求：{req.danmu_list}")
-    async for sentence in llm.handle_interact(req.danmu_list):
+    logger.info(f"开始处理弹幕请求：{processed_danmu_list}")
+    async for sentence in llm.handle_interact(session["danmu_cache"]):
         full_answer += sentence
         if config["tts"]["enabled"]:
-            # 添加到观众交互队列
-            tts.add_to_interact_queue(sentence)
-            if not loop_queue_cleared and not tts.interact_queue.empty():
+            # 解析句子等级
+            import re
+            match = re.match(r'^【([^】]+)】', sentence)
+            level = "normal"
+            if match:
+                tag = match.group(1)
+                if "必播" in tag:
+                    level = "mandatory"
+                elif "重要" in tag:
+                    level = "important"
+            # 添加到相应等级的队列
+            tts.add_to_queue(sentence, level)
+            if not loop_queue_cleared and (
+                    not tts.mandatory_queue.empty() or not tts.important_queue.empty() or not tts.normal_queue.empty()):
                 # 只有在互动队列不为空时才清空循环播报队列，避免两个队列都为空，播报停滞
                 tts.clear_loop_queue()
                 loop_queue_cleared = True
         else:
             logger.info(f"互动回复: {sentence}")
 
-    # 3. 恢复讲解
+    # 5. 恢复讲解
     llm.set_interrupt(False)
     await asyncio.sleep(0.1)
 

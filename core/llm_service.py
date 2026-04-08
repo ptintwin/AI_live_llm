@@ -40,6 +40,7 @@ class LLMLiveService:
         self.background = background if background else CURRENT_LIVE_ROOM_PROMPT
         self.max_history = config["llm"]["max_history"]
         self.interrupt_flag = False  # 自然中断标志
+        self.current_level = "normal"  # 当前正在处理的句子等级
         self.fixed_prefix_history = [
             {
                 "role": "system",
@@ -91,6 +92,9 @@ class LLMLiveService:
         Yields:
             流式生成的文本片段，确保以完整句子为单位
         """
+        # 记录当前生成的句子等级
+        current_level = "normal"
+        self.current_level = "normal"  # 重置当前等级
         if prompt:
             self.history.append({"role": "user", "content": prompt})
         self._trim_history()
@@ -149,24 +153,39 @@ class LLMLiveService:
                                         # 处理标签：使用正则表达式判断并拆分标签
                                         match = re.match(r'^【([^】]+)】', complete_sentence)
                                         if match:
-                                            tag = match.group(1) # TODO: 标签需要根据优先级排序，高优先级先回答
+                                            tag = match.group(1)
+                                            # 根据标签确定等级
+                                            if "必播" in tag:
+                                                current_level = "mandatory"
+                                            elif "重要" in tag:
+                                                current_level = "important"
+                                            else:
+                                                current_level = "normal"
                                             complete_sentence = complete_sentence[match.end():].strip()
+                                        # 更新当前等级
+                                        self.current_level = current_level
                                         logger.info(f"complete_sentence: {complete_sentence}")
 
                                         assistant_content += complete_sentence
                                         # 检查中断标志，在句子结束时检查
-                                        if not is_interact and self.interrupt_flag:
-                                            logger.info(f"会话{self.session_id}检测到中断标志，在句子结束后停止讲解")
-                                            yield complete_sentence
-                                            full_content = ""
-                                            break
+                                        if self.interrupt_flag:
+                                            # 如果当前句子是必播句，继续生成
+                                            if current_level == "mandatory":
+                                                logger.info(f"会话{self.session_id}当前句子是必播句，继续生成")
+                                                yield complete_sentence
+                                                full_content = full_content[last_end_idx + 1:].strip()
+                                            else:
+                                                logger.info(f"会话{self.session_id}检测到中断标志，在句子结束后停止{'讲解' if not is_interact else '互动'}")
+                                                yield complete_sentence
+                                                full_content = ""
+                                                break
                                         else:
                                             yield complete_sentence
                                             full_content = full_content[last_end_idx + 1:].strip()
                         # 定期检查中断标志，确保能够及时响应
-                        elif not is_interact and chunk_count % 3 == 0:  # 使用 chunk_count 替代 i
+                        elif chunk_count % 3 == 0:  # 使用 chunk_count 替代 i
                             if self.interrupt_flag:
-                                logger.info(f"会话{self.session_id}检测到中断标志，等待句子结束后停止讲解")
+                                logger.info(f"会话{self.session_id}检测到中断标志，等待句子结束后停止{'讲解' if not is_interact else '互动'}")
                                 # 继续累积内容，直到遇到标点
 
                 # 检查是否是最后一个包
@@ -235,15 +254,18 @@ class LLMLiveService:
         danmu_summary = ""
 
         # 构建弹幕摘要，按时间顺序从新到旧处理
-        for danmu in danmu_list[::-1]:
+        for danmu in danmu_list:
             username = getattr(danmu, 'username', '观众')
             content = getattr(danmu, 'content', '')
             danmu_type = getattr(danmu, 'type', '')
+            level = getattr(danmu, 'level', 'normal')
 
+            # 根据等级添加前缀
+            level_prefix = "" if level == "normal" else f"【{level}】"
             prefix_map = {'question': "【互动问题类】", 'gift': "【礼物灯牌类】", 'enter': "【进入直播间】",
                           'follow': "【关注或点赞类】"}
             suffix_pmt = f"观众‘{username}’：{content}\n" if danmu_type == 'question' else f"观众‘{username}’{content}\n"
-            danmu_summary += (prefix_map[danmu_type] + suffix_pmt)
+            danmu_summary += (level_prefix + prefix_map[danmu_type] + suffix_pmt)
 
         prompt = INTERACT_PROMPT.format(danmu_summary=danmu_summary)
         async for chunk in self._stream_llm_response(prompt, is_interact=True):
@@ -254,3 +276,12 @@ class LLMLiveService:
         """设置自然中断标志"""
         self.interrupt_flag = flag
         logger.info(f"会话{self.session_id}中断标志：{flag}， 当前状态：{'已中断' if flag else '恢复讲解'}")
+
+    def is_mandatory_in_progress(self):
+        """检查是否有必播句正在生成或播放
+
+        Returns:
+            bool: 是否有必播句正在生成或播放
+        """
+        # 检查当前正在处理的句子等级
+        return self.current_level == "mandatory"
