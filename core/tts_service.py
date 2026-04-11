@@ -190,11 +190,15 @@ class TTSLiveService:
         self.session_id = session_id
         self.callback = TTSStreamCallback(self)
         self.synthesizer = None
-        # 初始化队列：按优先级排序的互动队列和循环播报队列
+        self.current_playing_level = ""  # 当前正在播放的句子等级
+        # 以下是互动弹幕队列
         self.mandatory_queue = asyncio.Queue()  # 必播句队列
         self.important_queue = asyncio.Queue()  # 重要句队列
         self.normal_queue = asyncio.Queue()  # 一般句队列
+        # 以下是循环播报队列
         self.loop_queue = asyncio.Queue()  # 循环播报队列
+        # 过渡句子，优先级低于mandatory但高于important
+        self.transitional_sentence = ""
         # 消费任务
         self.consumer_task = None
 
@@ -246,18 +250,28 @@ class TTSLiveService:
             # 按优先级检查队列
             if not self.mandatory_queue.empty():
                 sentence = await self.mandatory_queue.get()
+                self.current_playing_level = "mandatory"
                 logger.info(f"当前必播句队列大小: {self.mandatory_queue.qsize()}，处理队列信息: {sentence}")
+            elif self.transitional_sentence:
+                sentence = self.transitional_sentence
+                self.transitional_sentence = ""
+                self.current_playing_level = "transitional"
+                logger.info(f"处理重要过渡句子: {sentence}")
             elif not self.important_queue.empty():
                 sentence = await self.important_queue.get()
+                self.current_playing_level = "important"
                 logger.info(f"当前重要句队列大小: {self.important_queue.qsize()}，处理队列信息: {sentence}")
             elif not self.normal_queue.empty():
                 sentence = await self.normal_queue.get()
+                self.current_playing_level = "normal"
                 logger.info(f"当前一般句队列大小: {self.normal_queue.qsize()}，处理队列信息: {sentence}")
             elif not self.loop_queue.empty():
                 sentence = await self.loop_queue.get()
+                self.current_playing_level = "normal"
                 logger.info(f"当前循环播报队列大小: {self.loop_queue.qsize()}，处理队列信息: {sentence}")
             else:
                 # 所有队列都为空，等待新任务
+                self.current_playing_level = ""  # 重置播放等级
                 await asyncio.sleep(0.1)
                 continue
 
@@ -282,7 +296,7 @@ class TTSLiveService:
                 self.synthesizer.streaming_call(sentence)
                 await asyncio.sleep(0.1)
                 try:
-                    await asyncio.wait_for(self.callback.play_completed.wait(), timeout=15.0)
+                    await asyncio.wait_for(self.callback.play_completed.wait(), timeout=20.0)
                     self.callback.play_completed.clear()
                 except asyncio.TimeoutError:
                     logger.warning(f"文本播放超时: {sentence[:20]}...")
@@ -299,7 +313,7 @@ class TTSLiveService:
                     self.synthesizer.streaming_call(sentence)
                     await asyncio.sleep(0.1)
                     try:
-                        await asyncio.wait_for(self.callback.play_completed.wait(), timeout=30.0)
+                        await asyncio.wait_for(self.callback.play_completed.wait(), timeout=20.0)
                         logger.info("重新启动后文本播放完成")
                     except asyncio.TimeoutError:
                         logger.warning("重新启动后文本播放超时")
@@ -333,9 +347,8 @@ class TTSLiveService:
             asyncio.create_task(self._check_connection_health())
             logger.info(f"会话{self.session_id}TTS队列消费者和健康检查已启动")
 
-    def add_to_queue(self, sentence: str, level: str = "normal"):
-        """根据等级添加文本到相应队列
-
+    def add_to_danmu_queue(self, sentence: str, level: str = "normal"):
+        """根据等级添加文本到互动弹幕相应队列
         Args:
             sentence: 要合成的文本
             level: 句子等级：mandatory（必播）、important（重要）、normal（一般）
@@ -351,16 +364,6 @@ class TTSLiveService:
                 self.normal_queue.put_nowait(sentence)
                 logger.info(f"推送一般句队列成功，当前队列大小: {self.normal_queue.qsize()}")
 
-    def add_to_interact_queue(self, sentence: str):
-        """添加文本到观众交互队列
-
-        Args:
-            sentence: 要合成的文本
-        """
-        if sentence:
-            self.interact_queue.put_nowait(sentence)
-            logger.info(f"推送观众交互队列成功，当前队列大小: {self.interact_queue.qsize()}")
-
     def add_to_loop_queue(self, sentence: str, cycle_count: int):
         """添加文本到循环播报队列
 
@@ -370,7 +373,8 @@ class TTSLiveService:
         """
         if sentence:
             self.loop_queue.put_nowait(sentence)
-            logger.info(f"当前第{cycle_count}轮次循环生成文本添加到播报队列成功，当前队列大小: {self.loop_queue.qsize()}")
+            logger.info(
+                f"当前第{cycle_count}轮次循环生成文本添加到播报队列成功，当前队列大小: {self.loop_queue.qsize()}")
 
     def get_loop_queue_size(self):
         """获取循环播报队列大小
@@ -379,6 +383,26 @@ class TTSLiveService:
             int: 队列大小
         """
         return self.loop_queue.qsize()
+
+    def is_prepare_loop(self):
+        """判断 loop_queue 队列为空且交互队列的元素总和为 1
+        Returns:
+            bool: 是否准备开始循环播报
+        """
+        # 检查 loop_queue 是否为空
+        loop_queue_empty = self.loop_queue.empty()
+
+        # 计算交互队列元素总和
+        interact_queue_sum = (
+                self.mandatory_queue.qsize() +
+                self.important_queue.qsize() +
+                self.normal_queue.qsize()
+        )
+        if interact_queue_sum == 1 and not loop_queue_empty:
+            logger.warning(f"会话{self.session_id}检测到交互队列总和为1，但循环播报队列不为空，请检查代码逻辑")
+
+        # 检查是否满足条件
+        return loop_queue_empty and interact_queue_sum == 1
 
     def clear_loop_queue(self):
         """清空循环播报队列"""
@@ -389,22 +413,29 @@ class TTSLiveService:
                 break
         logger.info(f"会话{self.session_id}循环播报队列已清空")
 
-    def clear_interact_queues(self):
-        """清空所有互动队列"""
-        # 清空必播句队列（实际上不应该清空，因为必播句必须播完）
+    def clear_interact_queues(self, clear_important=True, clear_normal=True):
+        """清空互动队列
+
+        Args:
+            clear_important: 是否清空重要句队列
+            clear_normal: 是否清空一般句队列
+        """
         # 清空重要句队列
-        while not self.important_queue.empty():
-            try:
-                self.important_queue.get_nowait()
-            except asyncio.QueueEmpty:
-                break
+        if clear_important:
+            while not self.important_queue.empty():
+                try:
+                    self.important_queue.get_nowait()
+                except asyncio.QueueEmpty:
+                    break
+            logger.info(f"会话{self.session_id}重要句队列已清空")
         # 清空一般句队列
-        while not self.normal_queue.empty():
-            try:
-                self.normal_queue.get_nowait()
-            except asyncio.QueueEmpty:
-                break
-        logger.info(f"会话{self.session_id}互动队列已清空")
+        if clear_normal:
+            while not self.normal_queue.empty():
+                try:
+                    self.normal_queue.get_nowait()
+                except asyncio.QueueEmpty:
+                    break
+            logger.info(f"会话{self.session_id}一般句队列已清空")
 
     async def complete_streaming(self):
         """完成当前轮次的流式合成会话"""

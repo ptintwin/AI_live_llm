@@ -10,10 +10,10 @@ import time
 from http import HTTPStatus
 from typing import AsyncGenerator, Any
 import dashscope
+from botocore.hooks import first_non_none_response
 # from dashscope import Generation
 from dashscope.aigc.generation import AioGeneration
 from yaml import safe_load
-from core.danmu_service import DanmuService
 from config.prompts import SYSTEM_PROMPT, CURRENT_LIVE_ROOM_PROMPT, CONTINUE_PROMPT, INTERACT_PROMPT
 from utils.logger import logger
 
@@ -36,11 +36,14 @@ class LLMLiveService:
             session_id: 会话ID，用于日志跟踪
             background: 背景信息，用于系统提示
         """
+        self.history = []
         self.session_id = session_id
         self.background = background if background else CURRENT_LIVE_ROOM_PROMPT
         self.max_history = config["llm"]["max_history"]
-        self.interrupt_flag = False  # 自然中断标志
-        self.current_level = "normal"  # 当前正在处理的句子等级
+        self.loop_interrupt_flag = False  # 控制live_loop中断或继续的标志
+        self.generation_type = None
+        self.cycle_count = 0  # 循环次数
+        self.user_focus_cycle = 0  # 循环生成中已"关注近期观众弹幕交互"的循环次数
         self.fixed_prefix_history = [
             {
                 "role": "system",
@@ -57,9 +60,6 @@ class LLMLiveService:
                 ]
             }
         ]
-        self.history = []
-        self.cycle_count = 0  # 循环次数
-        self.user_focus_cycle = 0  # 循环生成中已"关注近期观众弹幕交互"的循环次数
 
     def _trim_history(self):
         """裁剪历史：仅保留最近指定次数的assistant对话及其相关的其他角色对话"""
@@ -92,9 +92,13 @@ class LLMLiveService:
         Yields:
             流式生成的文本片段，确保以完整句子为单位
         """
-        # 记录当前生成的句子等级
-        current_level = "normal"
-        self.current_level = "normal"  # 重置当前等级
+        if self.generation_type is not None:
+            logger.info(f"会话{self.session_id}当前正在生成{self.generation_type}类型文本，已中断")
+            return
+
+        self.generation_type = 'live_danmu' if is_interact else 'live_loop'
+        logger.info(f"会话{self.session_id}开始生成{self.generation_type}类型文本")
+
         if prompt:
             self.history.append({"role": "user", "content": prompt})
         self._trim_history()
@@ -133,60 +137,27 @@ class LLMLiveService:
                     if chunk:
                         full_content += chunk
 
-                        # 实时返回段落（按句子切割，自然断点）
                         # 确保以完整句子为单位返回，以句号、感叹号或问号结尾
                         sentence_endings = ["。", "！", "？"]
-
-                        # 检查是否有句子结束符
                         has_ending = any(ending in chunk for ending in sentence_endings)
 
                         if has_ending:
-                            # 检查是否有完整句子
                             for ending in sentence_endings:
                                 if ending in full_content:
-                                    # 找到最后一个句子结束符
                                     last_end_idx = full_content.rfind(ending)
                                     if last_end_idx != -1:
-                                        # 提取完整句子
                                         complete_sentence = full_content[:last_end_idx + 1]
-
-                                        # 处理标签：使用正则表达式判断并拆分标签
-                                        match = re.match(r'^【([^】]+)】', complete_sentence)
-                                        if match:
-                                            tag = match.group(1)
-                                            # 根据标签确定等级
-                                            if "必播" in tag:
-                                                current_level = "mandatory"
-                                            elif "重要" in tag:
-                                                current_level = "important"
-                                            else:
-                                                current_level = "normal"
-                                            complete_sentence = complete_sentence[match.end():].strip()
-                                        # 更新当前等级
-                                        self.current_level = current_level
                                         logger.info(f"complete_sentence: {complete_sentence}")
-
                                         assistant_content += complete_sentence
-                                        # 检查中断标志，在句子结束时检查
-                                        if self.interrupt_flag:
-                                            # 如果当前句子是必播句，继续生成
-                                            if current_level == "mandatory":
-                                                logger.info(f"会话{self.session_id}当前句子是必播句，继续生成")
-                                                yield complete_sentence
-                                                full_content = full_content[last_end_idx + 1:].strip()
-                                            else:
-                                                logger.info(f"会话{self.session_id}检测到中断标志，在句子结束后停止{'讲解' if not is_interact else '互动'}")
-                                                yield complete_sentence
-                                                full_content = ""
-                                                break
+
+                                        if self.loop_interrupt_flag:
+                                            logger.info(f"会话{self.session_id}检测到循环生成中断标志，当前句子结束后停止生成")
+                                            yield complete_sentence
+                                            full_content = ""
+                                            break
                                         else:
                                             yield complete_sentence
                                             full_content = full_content[last_end_idx + 1:].strip()
-                        # 定期检查中断标志，确保能够及时响应
-                        elif chunk_count % 3 == 0:  # 使用 chunk_count 替代 i
-                            if self.interrupt_flag:
-                                logger.info(f"会话{self.session_id}检测到中断标志，等待句子结束后停止{'讲解' if not is_interact else '互动'}")
-                                # 继续累积内容，直到遇到标点
 
                 # 检查是否是最后一个包
                 if hasattr(resp, 'output') and resp.output and hasattr(resp.output, 'choices') and resp.output.choices:
@@ -215,10 +186,13 @@ class LLMLiveService:
             logger.error(f"错误栈：{traceback.format_exc()}")
             error_response = f"抱歉，{'回复您的问题' if is_interact else '讲解'}暂时遇到问题，请稍后再试。"
             yield error_response
+        finally:
+            self.generation_type = None
+
 
     async def generate_stream_paragraph(self) -> AsyncGenerator[str, Any]:
         """流式生成段落讲解内容（无互动时循环调用）"""
-        if self.interrupt_flag:
+        if self.loop_interrupt_flag:
             return
 
         self.cycle_count += 1
@@ -272,16 +246,11 @@ class LLMLiveService:
             yield chunk
         self.user_focus_cycle = 1
 
-    def set_interrupt(self, flag: bool):
-        """设置自然中断标志"""
-        self.interrupt_flag = flag
-        logger.info(f"会话{self.session_id}中断标志：{flag}， 当前状态：{'已中断' if flag else '恢复讲解'}")
+    def set_loop_interrupt(self, flag: bool):
+        """设置live_loop的中断标志"""
+        self.loop_interrupt_flag = flag
+        logger.info(f"会话{self.session_id}live_loop中断标志：{flag}， 当前状态：{'已中断' if flag else '恢复讲解'}")
 
-    def is_mandatory_in_progress(self):
-        """检查是否有必播句正在生成或播放
-
-        Returns:
-            bool: 是否有必播句正在生成或播放
-        """
-        # 检查当前正在处理的句子等级
-        return self.current_level == "mandatory"
+    def is_generating(self) -> bool:
+        """判断当前是否有生成任务"""
+        return self.generation_type is not None

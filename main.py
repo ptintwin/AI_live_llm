@@ -6,14 +6,13 @@
 import asyncio
 import uuid
 import os
-import time
+import re
 import traceback
 from datetime import datetime
 from fastapi import FastAPI, BackgroundTasks
-from pydantic import BaseModel, Field
-from typing import Optional
 import uvicorn
 from yaml import safe_load
+from core.models import DanmuItem, StartStreamRequest, LiveDanmuRequest, StopSessionRequest, VoiceCloneRequest, TTSRequest, DanmuLevelRequest
 from core.danmu_service import DanmuService
 from core.llm_service import LLMLiveService
 from core.tts_service import TTSLiveService
@@ -31,48 +30,6 @@ app = FastAPI(title="抖音游戏主播直播互动系统", version="1.0")
 
 # 全局会话管理（session_id: {llm, tts task}）
 SESSIONS = {}
-
-
-# 请求体模型
-class StartStreamRequest(BaseModel):
-    room_id: str = Field(..., description="直播间ID")
-    background: str = Field("", description="当前直播间专属系统提示词")
-
-
-class DanmuItem(BaseModel):
-    username: str = Field(..., description="用户名")
-    content: str = Field(..., description="弹幕内容")
-    type: str = Field(..., description="弹幕类型")
-    level: Optional[str] = Field(None, description="弹幕等级：mandatory（必播）、important（重要）、normal（一般）")
-    timestamp: float = Field(default_factory=time.time, description="弹幕时间戳")
-
-
-class LiveDanmuRequest(BaseModel):
-    session_id: str = Field(..., description="直播间唯一会话ID")
-    danmu_list: list[DanmuItem] = Field(default_factory=list, description="最近n秒内的观众弹幕内容列表")
-
-
-class StopSessionRequest(BaseModel):
-    session_id: str = Field(..., description="直播间唯一会话ID")
-
-
-class VoiceCloneRequest(BaseModel):
-    audio_url: str = Field(..., description="阿里云OSS的音频URL")
-
-
-class TTSRequest(BaseModel):
-    voice_id: str = Field(..., description="语音模型ID")
-    speech_rate: float = Field(1.0, description="语音语速，默认1.0")
-    pitch_rate: float = Field(1.0, description="语音音高，默认1.0")
-    instruction: Optional[str] = Field(None, description="语音模型指令提示词")
-    text: Optional[str] = Field(None, description="要合成语音的文本")
-    save_mode: str = Field("local", description="合成文件的保存模式，'local'表示本地存储，upload表示上传到OSS")
-
-
-class DanmuLevelRequest(BaseModel):
-    content: str = Field(..., description="弹幕内容")
-    type: str = Field(..., description="弹幕类型")
-
 
 # ------------------- 核心接口 -------------------
 @app.get("/health_check", summary="服务健康检查")
@@ -102,46 +59,35 @@ async def start_stream(req: StartStreamRequest, background_tasks: BackgroundTask
             # 标记是否正在生成文本
             is_generating = False
             while session_id in SESSIONS:
-                if llm_service.interrupt_flag:
-                    await asyncio.sleep(0.5)
-                    continue
+                if llm_service.loop_interrupt_flag:
+                    if tts_service.is_prepare_loop():
+                        logger.info(f"会话{session_id}检测到交互队列总和为1且循环播报队列为空，开始生成循环文本")
+                        llm_service.set_loop_interrupt(False)
+                    else:
+                        await asyncio.sleep(0.2)
+                        continue
 
                 # 检查循环播报队列大小，如果小于等于3且不在生成中，开始下一轮生成
                 if config["tts"]["enabled"] and tts_service.get_loop_queue_size() <= 3 and not is_generating:
                     # 流式生成段落并添加到队列（异步非阻塞）
                     logger.info(f"会话{session_id}开始第 {llm_service.cycle_count + 1} 轮循环讲解")
-
-                    # 创建异步任务来生成文本并添加到队列
-                    async def generate_and_add():
-                        nonlocal is_generating
-                        is_generating = True
-                        try:
-                            # 实时流式生成句子并添加到队列
-                            async for sentence in llm_service.generate_stream_paragraph():
-                                # 检查中断标志
-                                if llm_service.interrupt_flag:
-                                    logger.info(f"会话{session_id}检测到中断标志，停止当前轮次讲解")
-                                    break
-                                # 添加到循环播报队列
-                                if config["tts"]["enabled"]:
-                                    tts_service.add_to_loop_queue(sentence, llm_service.cycle_count)
-                                else:
-                                    # 非TTS模式下直接显示
-                                    await asyncio.sleep(0.5)
-                                # 检查中断标志，确保能够及时响应
-                                if llm_service.interrupt_flag:
-                                    logger.info(f"会话{session_id}检测到中断标志，停止当前轮次讲解")
-                                    break
-                        finally:
-                            is_generating = False
-
-                    # 启动后台任务
-                    asyncio.create_task(generate_and_add())
-
-                # 队列还有足够的内容，等待一段时间
-                await asyncio.sleep(1.0)
+                    # 实时流式生成句子并添加到队列
+                    async for sentence in llm_service.generate_stream_paragraph():
+                        # 检查中断标志
+                        if llm_service.loop_interrupt_flag:
+                            logger.info(f"会话{session_id}检测到中断标志，停止当前轮次讲解")
+                            break
+                        # 添加到循环播报队列
+                        if config["tts"]["enabled"]:
+                            tts_service.add_to_loop_queue(sentence, llm_service.cycle_count)
+                        else:
+                            # 非TTS模式下直接显示
+                            await asyncio.sleep(0.5)
+                        # 检查中断标志，确保能够及时响应
+                        if llm_service.loop_interrupt_flag:
+                            logger.info(f"会话{session_id}检测到中断标志，停止当前轮次讲解")
+                            break
         except Exception as e:
-            import traceback
             logger.error(f"会话{session_id}直播循环异常：{traceback.format_exc()}")
         finally:
             await stop_session(StopSessionRequest(session_id=session_id))
@@ -155,7 +101,7 @@ async def start_stream(req: StartStreamRequest, background_tasks: BackgroundTask
         "task": task
     }
 
-    return {"session_id": session_id, "status": "started"}
+    return {"session_id": session_id, "status": "start success!"}
 
 
 @app.post("/live_danmu", summary="直播间弹幕互动")
@@ -164,99 +110,58 @@ async def live_danmu(req: LiveDanmuRequest):
     if not session:
         return {"error": "会话不存在"}
 
-    llm: LLMLiveService = session["llm"]
-    tts: TTSLiveService = session["tts"]
-    danmu_service = DanmuService()
+    try:
+        llm: LLMLiveService = session["llm"]
+        tts: TTSLiveService = session["tts"]
+        danmu_service = DanmuService()
 
-    # 1. 处理新传入的弹幕，添加等级信息
-    processed_danmu_list = []
-    # 收集所有问题类型的弹幕
-    question_danmus, non_question_danmus = danmu_service.process_danmu_list(req.danmu_list)
+        llm.set_loop_interrupt(True)
 
-    if question_danmus:
-        # 批量识别问题类型弹幕的等级
-        question_contents = [danmu.content for danmu in question_danmus]
-        # 调用DanmuService的identify_levels方法
-        levels = await danmu_service.identify_levels(question_contents)
-        # 为问题类型弹幕添加等级
-        for i, danmu in enumerate(question_danmus):
-            level = danmu_service.map_level_to_standard(levels[i])
-            processed_danmu = DanmuItem(
-                username=danmu.username,
-                content=danmu.content,
-                type=danmu.type,
-                level=level,
-                timestamp=time.time()
-            )
-            processed_danmu_list.append(processed_danmu)
+        is_danmu_llm_generating, has_interact_queue_items = danmu_service.check_live_danmu_in_progress(llm, tts)
+        if not (is_danmu_llm_generating or has_interact_queue_items):
+            logger.info("上一次live_danmu调用已执行完或首次执行，直接处理新弹幕")
+            # 准备处理互动回复
+            full_answer = ""
+            loop_queue_cleared = False
 
-    # 处理非问题类型的弹幕
-    for danmu in non_question_danmus:
-        # 非问题类型弹幕的默认等级
-        if danmu.type in ["gift", "follow"]:
-            level = "important"
+            logger.info(f"开始处理弹幕请求：{req.danmu_list}")
+            async for sentence in llm.handle_interact(req.danmu_list):
+                full_answer += sentence
+                if config["tts"]["enabled"]:
+                    match = re.match(r'^【([^】]+)】', sentence)
+                    level = "normal"
+                    if match:
+                        tag = match.group(1)
+                        if "必播" in tag:
+                            level = "mandatory"
+                        elif "重要" in tag:
+                            level = "important"
+                    else:
+                        raise ValueError(f"生成的sentence未匹配到起始等级标签：{sentence}")
+
+                    tts.add_to_danmu_queue(sentence, level)
+                    if not loop_queue_cleared and not (tts.mandatory_queue.empty() and tts.important_queue.empty() and tts.normal_queue.empty()):
+                        # 只有在互动队列不为空时才清空循环播报队列，避免两个队列都为空，播报停滞
+                        tts.clear_loop_queue()
+                        loop_queue_cleared = True
+                else:
+                    logger.info(f"互动回复: {sentence}")
+
+            return {"session_id": req.session_id, "answer": full_answer}
         else:
-            level = "normal"
-        # 创建新的DanmuItem，添加等级和时间戳
-        processed_danmu = DanmuItem(
-            username=danmu.username,
-            content=danmu.content,
-            type=danmu.type,
-            level=level,
-            timestamp=time.time()
-        )
-        processed_danmu_list.append(processed_danmu)
+            logger.info("上一次live_danmu调用还未执行完，做进一步弹幕交互处理...")
+            # 处理弹幕等级分类和缓存更新
+            session["danmu_cache"] = await danmu_service.process_and_update_danmu(req.danmu_list, session["danmu_cache"])
+            if is_danmu_llm_generating:
+                return {"session_id": req.session_id, "answer": "上一轮互动弹幕文本正在生成中，已将当前弹幕缓存，稍后处理"}
+            elif has_interact_queue_items:
+                # 确定当前最高等级的弹幕
+                max_level = DanmuService.get_max_level(session["danmu_cache"])
+                full_answer = await danmu_service.handle_danmu_queues(max_level, session["danmu_cache"], llm, tts)
 
-    # 2. 更新danmu_cache
-    session["danmu_cache"] = danmu_service.update_danmu_cache(session["danmu_cache"], processed_danmu_list)
-
-    # 3. 检查是否需要中断当前处理
-    # 确定当前最高等级的弹幕
-    max_level = danmu_service.get_max_level(session["danmu_cache"])
-
-    # 检查当前是否有必播句正在生成或播放
-    has_mandatory = danmu_service.check_mandatory_in_progress(llm)
-
-    # 如果有高等级弹幕，设置中断
-    if max_level != "normal" and not has_mandatory:
-        llm.set_interrupt(True)
-        await asyncio.sleep(0.5)
-        # 清空非必播队列
-        tts.clear_interact_queues()
-
-    # 4. 准备处理互动回复
-    full_answer = ""
-    loop_queue_cleared = False
-
-    logger.info(f"开始处理弹幕请求：{processed_danmu_list}")
-    async for sentence in llm.handle_interact(session["danmu_cache"]):
-        full_answer += sentence
-        if config["tts"]["enabled"]:
-            # 解析句子等级
-            import re
-            match = re.match(r'^【([^】]+)】', sentence)
-            level = "normal"
-            if match:
-                tag = match.group(1)
-                if "必播" in tag:
-                    level = "mandatory"
-                elif "重要" in tag:
-                    level = "important"
-            # 添加到相应等级的队列
-            tts.add_to_queue(sentence, level)
-            if not loop_queue_cleared and (
-                    not tts.mandatory_queue.empty() or not tts.important_queue.empty() or not tts.normal_queue.empty()):
-                # 只有在互动队列不为空时才清空循环播报队列，避免两个队列都为空，播报停滞
-                tts.clear_loop_queue()
-                loop_queue_cleared = True
-        else:
-            logger.info(f"互动回复: {sentence}")
-
-    # 5. 恢复讲解
-    llm.set_interrupt(False)
-    await asyncio.sleep(0.1)
-
-    return {"session_id": req.session_id, "answer": full_answer}
+                return {"session_id": req.session_id, "answer": full_answer}
+    except Exception as e:
+        logger.error(f"会话{req.session_id}处理弹幕互动异常：{traceback.print_exc()}")
 
 
 @app.post("/stop_session", summary="停止指定会话")

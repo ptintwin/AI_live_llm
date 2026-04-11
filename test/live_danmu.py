@@ -31,33 +31,48 @@ def test_live_danmu():
     if not session_id:
         print("会话ID无效，跳过弹幕测试")
         return
+    import datetime
+    # 生成不同的时间戳，整体时差不超过3秒
+    base_time = datetime.datetime.now()
+    danmu_times = [
+        base_time.strftime("%Y-%m-%d %H:%M:%S"),
+        (base_time + datetime.timedelta(seconds=1)).strftime("%Y-%m-%d %H:%M:%S"),
+        (base_time + datetime.timedelta(seconds=1.5)).strftime("%Y-%m-%d %H:%M:%S"),
+        (base_time + datetime.timedelta(seconds=2)).strftime("%Y-%m-%d %H:%M:%S"),
+        (base_time + datetime.timedelta(seconds=2.5)).strftime("%Y-%m-%d %H:%M:%S")
+    ]
     resp = requests.post(f"{BASE_URL}/live_danmu", json={
         "session_id": session_id,
         "danmu_list": [
         {
           "username": "王哥",
           "content": "游戏怎么下载？",
-          "type": "question"
+          "type": "question",
+          "danmu_time": danmu_times[0]
         },
         {
           "username": "李哥",
           "content": "主播好厉害！",
-          "type": "question"
+          "type": "question",
+          "danmu_time": danmu_times[1]
         },
         {
           "username": "大英雄",
           "content": "点亮了粉丝灯牌",
-          "type": "gift"
+          "type": "gift",
+          "danmu_time": danmu_times[2]
         },
         {
             "username": "小飞飞",
             "content": "来了",
-            "type": "enter"
+            "type": "enter",
+            "danmu_time": danmu_times[3]
         },
         {
             "username": "土豪哥",
             "content": "送出了豪华游艇！",
-            "type": "gift"
+            "type": "gift",
+            "danmu_time": danmu_times[4]
         }]
     })
     if resp.status_code == 200:
