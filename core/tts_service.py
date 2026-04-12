@@ -78,7 +78,8 @@ class TTSStreamCallback(ResultCallback):
         """错误回调"""
         logger.error(f"[TTS] on_error: {msg}")
         self.has_error = True
-        asyncio.create_task(self._set_completed_event())
+        # asyncio.create_task(self._set_completed_event())
+        self.play_completed.set()
 
     def on_close(self):
         """连接关闭时清理资源"""
@@ -251,24 +252,24 @@ class TTSLiveService:
             if not self.mandatory_queue.empty():
                 sentence = await self.mandatory_queue.get()
                 self.current_playing_level = "mandatory"
-                logger.info(f"当前必播句队列大小: {self.mandatory_queue.qsize()}，tts播报句子内容: {sentence}")
+                logger.info(f"当前队列大小: {self.mandatory_queue.qsize()}，【必播句】tts播报句子内容: {sentence}")
             elif self.transitional_sentence:
                 sentence = self.transitional_sentence
                 self.transitional_sentence = ""
                 self.current_playing_level = "transitional"
-                logger.info(f"tts播报重要过渡句子: {sentence}")
+                logger.info(f"【重要过渡句】tts播报句子内容: {sentence}")
             elif not self.important_queue.empty():
                 sentence = await self.important_queue.get()
                 self.current_playing_level = "important"
-                logger.info(f"当前重要句队列大小: {self.important_queue.qsize()}，tts播报句子内容: {sentence}")
+                logger.info(f"当前队列大小: {self.important_queue.qsize()}，【重要句】tts播报句子内容: {sentence}")
             elif not self.normal_queue.empty():
                 sentence = await self.normal_queue.get()
                 self.current_playing_level = "normal"
-                logger.info(f"当前一般句队列大小: {self.normal_queue.qsize()}，tts播报句子内容: {sentence}")
+                logger.info(f"当前队列大小: {self.normal_queue.qsize()}，【一般句】tts播报句子内容: {sentence}")
             elif not self.loop_queue.empty():
                 sentence = await self.loop_queue.get()
                 self.current_playing_level = "normal"
-                logger.info(f"当前循环播报队列大小: {self.loop_queue.qsize()}，tts播报句子内容: {sentence}")
+                logger.info(f"当前队列大小: {self.loop_queue.qsize()}，【循环播报】tts播报句子内容: {sentence}")
             else:
                 # 所有队列都为空，等待新任务
                 self.current_playing_level = ""  # 重置播放等级
@@ -413,7 +414,7 @@ class TTSLiveService:
                 break
         logger.info(f"会话{self.session_id}循环播报队列已清空")
 
-    def clear_interact_queues(self, clear_important=True, clear_normal=True):
+    async def clear_interact_queues(self, clear_important=True, clear_normal=True):
         """清空互动队列
 
         Args:

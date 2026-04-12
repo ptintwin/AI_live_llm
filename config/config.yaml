@@ -3,7 +3,7 @@ dashscope:
   api_key: "配置并读取环境变量DASHSCOPE_API_KEY"
   region: "cn-beijing"
 
-# 大模型配置
+# 文本大模型配置
 llm:
   model_name: "qwen-plus-character"
   max_history: 5  # 短期记忆对话轮次
@@ -16,17 +16,21 @@ llm:
 tts:
   enabled: true
   model_name: "cosyvoice-v3.5-plus"
-  voice_id: "cosyvoice-v3.5-plus-myvoice-ed6b0a6f1e6746f3bc56030f4589fff4"
+  voice_id: "cosyvoice-v3.5-plus-myvoice-4b8964a1dc9a4a07bd6babf1c5db8fe3"
   sample_rate: 16000
   format: "wav"
   speech_rate: 1.2
   pitch_rate: 1.0
   stream: true
 
-# 直播配置
+# 直播工程配置
 live:
   max_cycle_focus: 3  # 前3次循环纳入观众关注点
   default_background: "你是一名激情的抖音游戏主播，正在讲解爆款仙侠手游，引导下载、充值、互动"
+  danmu_cache:
+    max_seconds: 30 # 缓存弹幕最大秒数
+    max_nums: 15 # 缓存弹幕最大条数
+
 
 # 阿里云OSS配置
 oss:

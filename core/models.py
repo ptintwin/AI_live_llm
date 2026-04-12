@@ -24,6 +24,11 @@ class LiveDanmuRequest(BaseModel):
     danmu_list: list[DanmuItem] = Field(default_factory=list, description="最近n秒内的观众弹幕内容列表")
 
 
+class SwitchVoiceRoleRequest(BaseModel):
+    session_id: str = Field(..., description="直播间唯一会话ID")
+    voice_id: str = Field(..., description="音色id")
+
+
 class StopSessionRequest(BaseModel):
     session_id: str = Field(..., description="直播间唯一会话ID")
 

@@ -12,7 +12,7 @@ from datetime import datetime
 from fastapi import FastAPI, BackgroundTasks
 import uvicorn
 from yaml import safe_load
-from core.models import DanmuItem, StartStreamRequest, LiveDanmuRequest, StopSessionRequest, VoiceCloneRequest, TTSRequest, DanmuLevelRequest
+from core.models import *
 from core.danmu_service import DanmuService
 from core.llm_service import LLMLiveService
 from core.tts_service import TTSLiveService
@@ -97,8 +97,10 @@ async def start_stream(req: StartStreamRequest, background_tasks: BackgroundTask
     SESSIONS[session_id] = {
         "llm": llm_service,
         "tts": tts_service,
+        "room_id": req.room_id,
         "danmu_cache": [],
-        "task": task
+        "task": task,
+        "created_at": datetime.now()
     }
 
     return {"session_id": session_id, "status": "start success!"}
@@ -149,13 +151,35 @@ async def live_danmu(req: LiveDanmuRequest):
             if is_danmu_llm_generating:
                 return {"session_id": req.session_id, "answer": "上一轮互动弹幕文本正在生成中，已将当前弹幕缓存，稍后处理"}
             elif has_interact_queue_items:
-                logger.info(f"当前上一轮互动弹幕文本生成已完成，开始处理当前等级弹幕和互动弹幕队列")
+                logger.info(f"当前上一轮互动弹幕文本生成已完成，开始处理最新danmu_cache弹幕请求：{session['danmu_cache']}")
                 max_level = DanmuService.get_max_level(session["danmu_cache"])
                 full_answer = await danmu_service.handle_danmu_queues(max_level, session["danmu_cache"], llm, tts)
 
                 return {"session_id": req.session_id, "answer": full_answer}
     except Exception as e:
         logger.error(f"会话{req.session_id}处理弹幕互动异常：{traceback.print_exc()}")
+
+
+@app.post("/switch_voice_role", summary="切换到某个声音角色")
+async def switch_voice_role(req: SwitchVoiceRoleRequest):
+    session = SESSIONS.get(req.session_id)
+    if not session:
+        return {"error": "会话不存在"}
+
+    return {"session_id": req.session_id, "status": "switch success!"}
+
+
+@app.get("/list_sessions", summary="查询所有活跃会话")
+async def list_sessions():
+    """查询所有活跃会话"""
+    sessions_info = []
+    for sid, data in SESSIONS.items():
+        sessions_info.append({
+            "session_id": sid,
+            "room_id": data.get("room_id"),
+            "created_at": data.get("created_at")
+        })
+    return {"sessions": sessions_info, "count": len(sessions_info)}
 
 
 @app.post("/stop_session", summary="停止指定会话")

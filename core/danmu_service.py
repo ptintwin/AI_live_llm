@@ -77,14 +77,14 @@ class DanmuService:
 
                 assert len(levels) == len(contents), f"识别等级数量与输入内容数量不一致: {len(levels)} != {len(contents)}"
 
-                logger.info(f"弹幕等级识别完成，识别条数: {len(contents)}")
-                return levels[:len(contents)]  # 截断到与输入相同长度
+                logger.info(f"danmu_cache里的question弹幕等级识别完成，识别结果: {levels}")
+                return levels # 截断到与输入相同长度
 
             # 默认返回其它闲聊问题列表
-            logger.info(f"弹幕等级识别完成，识别条数: {len(contents)}")
+            logger.info(f"danmu_cache里的question弹幕等级识别失败，原始内容: {contents}")
             return ["其它闲聊问题"] * len(contents)
         except Exception as e:
-            logger.error(f"弹幕等级识别异常: {e}")
+            logger.error(f"danmu_cache里的question弹幕等级识别异常: {e}")
             return ["其它闲聊问题"] * len(contents)
 
     @staticmethod
@@ -137,16 +137,21 @@ class DanmuService:
         # 先将新弹幕添加到缓存
         danmu_cache.extend(new_danmus)
 
-        # 过滤掉超过30秒的弹幕
+        # 过滤掉超过_max_seconds秒的弹幕
+        logger.info(f"更新弹幕缓存，当前缓存大小：{len(danmu_cache)}")
+        _max_seconds = int(config["live"]["danmu_cache"]["max_seconds"])
         current_time = datetime.now()
-        danmu_cache = [danmu for danmu in danmu_cache if (current_time - datetime.strptime(danmu.danmu_time, "%Y-%m-%d %H:%M:%S")).total_seconds() <= 30]
+        danmu_cache = [danmu for danmu in danmu_cache if (current_time - datetime.strptime(danmu.danmu_time, "%Y-%m-%d %H:%M:%S")).total_seconds() <= _max_seconds]
+        logger.info(f"更新弹幕缓存，过滤后缓存大小：{len(danmu_cache)}")
 
         # 按时间从新到旧排序
         danmu_cache.sort(key=lambda x: datetime.strptime(x.danmu_time, "%Y-%m-%d %H:%M:%S"), reverse=True)
 
-        # 只保留最近15条弹幕
-        if len(danmu_cache) > 15:
-            danmu_cache = danmu_cache[:15]
+        # 只保留最近_max_nums 条弹幕
+        _max_nums = int(config["live"]["danmu_cache"]["max_nums"])
+        if len(danmu_cache) > _max_nums:
+            danmu_cache = danmu_cache[:_max_nums]
+        logger.info(f"更新弹幕缓存，最多保留{_max_nums}条弹幕，当前缓存大小：{len(danmu_cache)}")
 
         return danmu_cache
 
@@ -212,6 +217,7 @@ class DanmuService:
             question_contents = [danmu.content for danmu in question_danmus]
             # 调用DanmuService的identify_levels方法
             levels = await DanmuService.identify_levels(question_contents)
+
             # 为问题类型弹幕添加等级
             for i, _danmu in enumerate(question_danmus):
                 level = DanmuService.map_level_to_standard(levels[i])
@@ -280,26 +286,23 @@ class DanmuService:
             str: 处理结果
         """
         full_answer = ""
-        loop_queue_cleared = False
+        is_queue_cleared = False
 
         # 等级配置映射
         level_config = {
             "mandatory": {
-                "log": "当前最高等级为【必播句】，开始处理...",
                 "clear_important": True,
                 "clear_normal": True,
                 "check_mandatory_queue": False,
                 "check_important_queue": False
             },
             "important": {
-                "log": "当前最高等级为【重要句】，开始处理...",
                 "clear_important": True,
                 "clear_normal": True,
                 "check_mandatory_queue": True,
                 "check_important_queue": True
             },
             "normal": {
-                "log": "当前最高等级为【一般句】，开始处理...",
                 "clear_important": False,
                 "clear_normal": True,
                 "check_mandatory_queue": False,
@@ -309,19 +312,26 @@ class DanmuService:
 
         # 获取当前等级配置
         config_data = level_config.get(max_level, level_config["normal"])
-        logger.info(config_data["log"])
-        import pdb;pdb.set_trace()
+        logger.info(f"当前最高等级max_level={max_level}，开始处理...")
 
         # 特殊处理重要等级的队列检查
-        if max_level == "important" and not tts.mandatory_queue.empty():
-            logger.info("必播队列不为空，直接处理")
-        elif max_level == "important" and not tts.important_queue.empty():
-            logger.info("重要队列不为空，先取出一个作为过渡句子")
-            try:
-                tts.transitional_sentence = tts.important_queue.get_nowait()
-                logger.info(f"设置过渡句子: {tts.transitional_sentence}")
-            except asyncio.QueueEmpty:
-                pass
+        _interact_Qsize = f"self.mandatory_queue={tts.mandatory_queue.qsize()}，self.important_queue={tts.important_queue.qsize()}，self.normal_queue={tts.normal_queue.qsize()}"
+        if max_level == "mandatory":
+            logger.info(_interact_Qsize)
+        elif max_level == "important":
+            if not tts.mandatory_queue.empty():
+                logger.info(f"必播句队列不为空，先处理清空以下队列：" + _interact_Qsize)
+            elif not tts.important_queue.empty():
+                logger.info(f"重要句队列不为空，先取出一个作为过渡句子，然后处理清空以下列：" + _interact_Qsize)
+                try:
+                    tts.transitional_sentence = tts.important_queue.get_nowait()
+                    logger.info(f"从tts.important_queue取出并赋值过渡句子成功: {tts.transitional_sentence}")
+                except asyncio.QueueEmpty:
+                    pass
+        elif max_level == "normal":
+            logger.info(_interact_Qsize)
+        else:
+            raise ValueError(f"不支持的等级: {max_level}")
 
         # 处理弹幕
         async for sentence in llm.handle_interact(danmu_cache):
@@ -329,19 +339,20 @@ class DanmuService:
             if config["tts"]["enabled"]:
                 # 解析句子等级
                 level = DanmuService.parse_sentence_level(sentence)
-                # 添加到相应等级的队列
-                tts.add_to_danmu_queue(sentence, level)
-                # 清空队列逻辑
-                if not loop_queue_cleared:
-                    # 必播句特殊处理
+
+                if not is_queue_cleared:
+                    # 清空队列逻辑
                     if level == "mandatory":
-                        tts.clear_interact_queues(clear_important=True, clear_normal=True)
+                        await tts.clear_interact_queues(clear_important=True, clear_normal=True)
                     else:
-                        tts.clear_interact_queues(
+                        await tts.clear_interact_queues(
                             clear_important=config_data["clear_important"],
                             clear_normal=config_data["clear_normal"]
                         )
-                    loop_queue_cleared = True
+                    is_queue_cleared = True
+
+                # 添加到相应等级的队列
+                tts.add_to_danmu_queue(sentence, level)
             else:
                 logger.info(f"互动回复: {sentence}")
 

@@ -137,7 +137,7 @@ class LLMLiveService:
                         full_content += chunk
 
                         # 确保以完整句子为单位返回，以句号、感叹号或问号结尾
-                        sentence_endings = ["。", "！", "？"]
+                        sentence_endings = ["。", "！", "？", "~"]
                         has_ending = any(ending in chunk for ending in sentence_endings)
 
                         if has_ending:
@@ -145,20 +145,18 @@ class LLMLiveService:
                                 if ending in full_content:
                                     last_end_idx = full_content.rfind(ending)
                                     if last_end_idx != -1:
-                                        logger.info(f"full_content: {full_content}")
-                                        complete_sentence = full_content[:last_end_idx + 1].strip()
-
+                                        # logger.info(f"full_content: {full_content}")
                                         if is_interact:
-                                            # 检查是否有起始的"【xxx】"格式标签
-                                            tag_match = re.match(r'^【([^】]+)】', complete_sentence)
-
-                                            # 如果没有标签且存在上一句的标签，则添加
-                                            if not tag_match and hasattr(self, 'previous_tag') and self.previous_tag:
-                                                complete_sentence = f"{self.previous_tag}{complete_sentence}"
-
-                                            # 更新上一句的标签
+                                            tag_match = re.match(r'^【([^】]+)】', full_content)
                                             if tag_match:
-                                                self.previous_tag = tag_match.group(0)
+                                                _level = tag_match.group(0).strip()
+                                            elif hasattr(self, 'previous_tag') and self.previous_tag:
+                                                _level = self.previous_tag
+                                            else:
+                                                _level = "一般句"
+                                            # complete_sentence = full_content.find(_level)
+                                        else:
+                                            complete_sentence = full_content[:last_end_idx + 1].strip()
 
                                         logger.info(f"complete_sentence: {complete_sentence}")
                                         assistant_content += complete_sentence
