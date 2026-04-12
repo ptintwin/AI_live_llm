@@ -92,9 +92,8 @@ class LLMLiveService:
         Yields:
             流式生成的文本片段，确保以完整句子为单位
         """
-        if self.generation_type is not None:
-            logger.info(f"会话{self.session_id}当前正在生成{self.generation_type}类型文本，已中断")
-            return
+        # if self.generation_type is not None:
+        #     logger.info(f"会话{self.session_id}当前正在生成{self.generation_type}类型文本，已中断")
 
         self.generation_type = 'live_danmu' if is_interact else 'live_loop'
         logger.info(f"会话{self.session_id}开始生成{self.generation_type}类型文本")
@@ -109,7 +108,7 @@ class LLMLiveService:
         try:
             # 调用通义千问（流式+临时缓存+增量输出）
             logger.info(f"开始调用LLM：模型={config['llm']['model_name']}，self.history长度={len(self.history)}")
-            logger.info(f"self.history: {self.history}")
+            # logger.info(f"self.history: {self.history}")
             # 如果最近的
             responses = await AioGeneration.call(
                 model=config["llm"]["model_name"],
@@ -146,12 +145,27 @@ class LLMLiveService:
                                 if ending in full_content:
                                     last_end_idx = full_content.rfind(ending)
                                     if last_end_idx != -1:
-                                        complete_sentence = full_content[:last_end_idx + 1]
+                                        logger.info(f"full_content: {full_content}")
+                                        complete_sentence = full_content[:last_end_idx + 1].strip()
+
+                                        if is_interact:
+                                            # 检查是否有起始的"【xxx】"格式标签
+                                            tag_match = re.match(r'^【([^】]+)】', complete_sentence)
+
+                                            # 如果没有标签且存在上一句的标签，则添加
+                                            if not tag_match and hasattr(self, 'previous_tag') and self.previous_tag:
+                                                complete_sentence = f"{self.previous_tag}{complete_sentence}"
+
+                                            # 更新上一句的标签
+                                            if tag_match:
+                                                self.previous_tag = tag_match.group(0)
+
                                         logger.info(f"complete_sentence: {complete_sentence}")
                                         assistant_content += complete_sentence
 
-                                        if self.loop_interrupt_flag:
-                                            logger.info(f"会话{self.session_id}检测到循环生成中断标志，当前句子结束后停止生成")
+                                        if not is_interact and self.loop_interrupt_flag:
+                                            logger.info(
+                                                f"会话{self.session_id}检测到循环生成中断标志，当前句子结束后停止生成")
                                             yield complete_sentence
                                             full_content = ""
                                             break
@@ -188,7 +202,6 @@ class LLMLiveService:
             yield error_response
         finally:
             self.generation_type = None
-
 
     async def generate_stream_paragraph(self) -> AsyncGenerator[str, Any]:
         """流式生成段落讲解内容（无互动时循环调用）"""
@@ -251,6 +264,6 @@ class LLMLiveService:
         self.loop_interrupt_flag = flag
         logger.info(f"会话{self.session_id}live_loop中断标志：{flag}， 当前状态：{'已中断' if flag else '恢复讲解'}")
 
-    def is_generating(self) -> bool:
-        """判断当前是否有生成任务"""
-        return self.generation_type is not None
+    def set_generation_type(self, _type: str):
+        """设置当前生成任务类型"""
+        self.generation_type = _type

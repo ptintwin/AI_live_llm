@@ -60,7 +60,7 @@ async def start_stream(req: StartStreamRequest, background_tasks: BackgroundTask
             is_generating = False
             while session_id in SESSIONS:
                 if llm_service.loop_interrupt_flag:
-                    if tts_service.is_prepare_loop():
+                    if llm_service.generation_type != "live_danmu" and tts_service.is_prepare_loop():
                         logger.info(f"会话{session_id}检测到交互队列总和为1且循环播报队列为空，开始生成循环文本")
                         llm_service.set_loop_interrupt(False)
                     else:
@@ -116,8 +116,11 @@ async def live_danmu(req: LiveDanmuRequest):
         danmu_service = DanmuService()
 
         llm.set_loop_interrupt(True)
+        if llm.generation_type == "live_loop":
+            llm.set_generation_type(None)
 
         is_danmu_llm_generating, has_interact_queue_items = danmu_service.check_live_danmu_in_progress(llm, tts)
+        logger.info(f"当前是否有弹幕交互文本在生成: {is_danmu_llm_generating}, 当前弹幕交互队列是否有待播报句子: {has_interact_queue_items}")
         if not (is_danmu_llm_generating or has_interact_queue_items):
             logger.info("上一次live_danmu调用已执行完或首次执行，直接处理新弹幕")
             # 准备处理互动回复
@@ -128,16 +131,7 @@ async def live_danmu(req: LiveDanmuRequest):
             async for sentence in llm.handle_interact(req.danmu_list):
                 full_answer += sentence
                 if config["tts"]["enabled"]:
-                    match = re.match(r'^【([^】]+)】', sentence)
-                    level = "normal"
-                    if match:
-                        tag = match.group(1)
-                        if "必播" in tag:
-                            level = "mandatory"
-                        elif "重要" in tag:
-                            level = "important"
-                    else:
-                        raise ValueError(f"生成的sentence未匹配到起始等级标签：{sentence}")
+                    level = DanmuService.parse_sentence_level(sentence)
 
                     tts.add_to_danmu_queue(sentence, level)
                     if not loop_queue_cleared and not (tts.mandatory_queue.empty() and tts.important_queue.empty() and tts.normal_queue.empty()):
@@ -155,7 +149,7 @@ async def live_danmu(req: LiveDanmuRequest):
             if is_danmu_llm_generating:
                 return {"session_id": req.session_id, "answer": "上一轮互动弹幕文本正在生成中，已将当前弹幕缓存，稍后处理"}
             elif has_interact_queue_items:
-                # 确定当前最高等级的弹幕
+                logger.info(f"当前上一轮互动弹幕文本生成已完成，开始处理当前等级弹幕和互动弹幕队列")
                 max_level = DanmuService.get_max_level(session["danmu_cache"])
                 full_answer = await danmu_service.handle_danmu_queues(max_level, session["danmu_cache"], llm, tts)
 

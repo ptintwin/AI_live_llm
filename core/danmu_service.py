@@ -203,6 +203,7 @@ class DanmuService:
         Returns:
             updated_danmu_cache: 更新后的弹幕缓存
         """
+        logger.info(f"开始处理弹幕等级分类和缓存更新，原始弹幕数量: {len(danmu_list)}")
         processed_danmu_list = []
         question_danmus, non_question_danmus = DanmuService.process_danmu_list(danmu_list)
 
@@ -239,11 +240,12 @@ class DanmuService:
 
         # 更新danmu_cache
         updated_danmu_cache = DanmuService.update_danmu_cache(danmu_cache, processed_danmu_list)
+        logger.info(f"更新弹幕缓存后，当前缓存弹幕数量: {len(updated_danmu_cache)}")
 
         return updated_danmu_cache
 
     @staticmethod
-    def _parse_sentence_level(sentence):
+    def parse_sentence_level(sentence):
         """
         解析句子等级
 
@@ -260,6 +262,8 @@ class DanmuService:
                 level = "mandatory"
             elif "重要" in tag:
                 level = "important"
+        else:
+            raise ValueError(f"生成的sentence未匹配到起始等级标签：{sentence}")
         return level
 
     @staticmethod
@@ -281,21 +285,21 @@ class DanmuService:
         # 等级配置映射
         level_config = {
             "mandatory": {
-                "log": "当前最高等级为必播句，开始处理...",
+                "log": "当前最高等级为【必播句】，开始处理...",
                 "clear_important": True,
                 "clear_normal": True,
                 "check_mandatory_queue": False,
                 "check_important_queue": False
             },
             "important": {
-                "log": "当前最高等级为重要句，开始处理",
+                "log": "当前最高等级为【重要句】，开始处理...",
                 "clear_important": True,
                 "clear_normal": True,
                 "check_mandatory_queue": True,
                 "check_important_queue": True
             },
             "normal": {
-                "log": "当前最高等级为一般句，开始处理",
+                "log": "当前最高等级为【一般句】，开始处理...",
                 "clear_important": False,
                 "clear_normal": True,
                 "check_mandatory_queue": False,
@@ -306,6 +310,7 @@ class DanmuService:
         # 获取当前等级配置
         config_data = level_config.get(max_level, level_config["normal"])
         logger.info(config_data["log"])
+        import pdb;pdb.set_trace()
 
         # 特殊处理重要等级的队列检查
         if max_level == "important" and not tts.mandatory_queue.empty():
@@ -323,7 +328,7 @@ class DanmuService:
             full_answer += sentence
             if config["tts"]["enabled"]:
                 # 解析句子等级
-                level = DanmuService._parse_sentence_level(sentence)
+                level = DanmuService.parse_sentence_level(sentence)
                 # 添加到相应等级的队列
                 tts.add_to_danmu_queue(sentence, level)
                 # 清空队列逻辑

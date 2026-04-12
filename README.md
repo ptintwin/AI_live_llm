@@ -88,7 +88,7 @@ AI_live_llm/
 ```json
 {
   "session_id": "550e8400-e29b-41d4-a716-446655440000",
-  "status": "started"
+  "status": "start success!"
 }
 ```
 
@@ -116,26 +116,36 @@ AI_live_llm/
 {
   "session_id": "550e8400-e29b-41d4-a716-446655440000",
   "danmu_list": [
-    {
-      "username": "观众1",
-      "content": "主播好厉害！",
-      "type": "question"
-    },
-    {
-      "username": "观众2",
-      "content": "‘观众2’来了",
-      "type": "enter"
-    },
-    {
-      "username": "观众3",
-      "content": "‘观众3’关注了主播",
-      "type": "follow"
-    },
-    {
-      "username": "观众4",
-      "content": "‘观众4’送出超跑/点赞了",
-      "type": "gift"
-    }
+     {
+          "username": "王哥",
+          "content": "游戏怎么下载？",
+          "type": "question",
+          "danmu_time": "%Y-%m-%d %H:%M:%S"
+        },
+        {
+          "username": "李哥",
+          "content": "主播好厉害！",
+          "type": "question",
+          "danmu_time": "%Y-%m-%d %H:%M:%S"
+        },
+        {
+          "username": "大英雄",
+          "content": "点亮了粉丝灯牌",
+          "type": "gift",
+          "danmu_time": "%Y-%m-%d %H:%M:%S"
+        },
+        {
+            "username": "小飞飞",
+            "content": "来了",
+            "type": "enter",
+            "danmu_time": "%Y-%m-%d %H:%M:%S"
+        },
+        {
+            "username": "土豪哥",
+            "content": "送出了豪华游艇！",
+            "type": "gift",
+            "danmu_time": "%Y-%m-%d %H:%M:%S"
+        }
   ]
 }
 ```
