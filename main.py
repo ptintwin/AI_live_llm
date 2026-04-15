@@ -73,6 +73,8 @@ async def start_stream(req: StartStreamRequest, background_tasks: BackgroundTask
                     logger.info(f"会话{session_id}开始第 {llm_service.cycle_count + 1} 轮循环讲解")
                     # 实时流式生成句子并添加到队列
                     async for sentence in llm_service.generate_stream_paragraph():
+                        _, sentence = DanmuService.extract_level_and_sentence(sentence, is_interact=False)
+
                         # 检查中断标志
                         if llm_service.loop_interrupt_flag:
                             logger.info(f"会话{session_id}检测到中断标志，停止当前轮次讲解")
@@ -131,9 +133,8 @@ async def live_danmu(req: LiveDanmuRequest):
 
             logger.info(f"开始处理弹幕请求：{req.danmu_list}")
             async for sentence in llm.handle_interact(req.danmu_list):
-                full_answer += sentence
                 if config["tts"]["enabled"]:
-                    level = DanmuService.parse_sentence_level(sentence)
+                    level, sentence = DanmuService.extract_level_and_sentence(sentence)
 
                     tts.add_to_danmu_queue(sentence, level)
                     if not loop_queue_cleared and not (tts.mandatory_queue.empty() and tts.important_queue.empty() and tts.normal_queue.empty()):
@@ -142,6 +143,8 @@ async def live_danmu(req: LiveDanmuRequest):
                         loop_queue_cleared = True
                 else:
                     logger.info(f"互动回复: {sentence}")
+
+                full_answer += sentence
 
             return {"session_id": req.session_id, "answer": full_answer}
         else:

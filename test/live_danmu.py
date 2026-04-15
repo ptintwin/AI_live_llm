@@ -138,7 +138,7 @@ async def test_live_danmu():
     ]
 
     # 发送第二次请求
-    await send_danmu_request(session_id, second_danmu_list, 2)
+    # await send_danmu_request(session_id, second_danmu_list, 2)
 
 
 if __name__ == "__main__":

@@ -109,7 +109,6 @@ class LLMLiveService:
             # 调用通义千问（流式+临时缓存+增量输出）
             logger.info(f"开始调用LLM：模型={config['llm']['model_name']}，self.history长度={len(self.history)}")
             # logger.info(f"self.history: {self.history}")
-            # 如果最近的
             responses = await AioGeneration.call(
                 model=config["llm"]["model_name"],
                 messages=self.fixed_prefix_history + self.history,
@@ -146,20 +145,22 @@ class LLMLiveService:
                                     last_end_idx = full_content.rfind(ending)
                                     if last_end_idx != -1:
                                         # logger.info(f"full_content: {full_content}")
+                                        complete_sentence = full_content[:last_end_idx + 1].strip()
+                                        logger.info(f"当前“{'弹幕互动' if is_interact else '循环播报'}”模式complete_sentence: {complete_sentence}")
+
                                         if is_interact:
                                             tag_match = re.match(r'^【([^】]+)】', full_content)
                                             if tag_match:
-                                                _level = tag_match.group(0).strip()
-                                            elif hasattr(self, 'previous_tag') and self.previous_tag:
-                                                _level = self.previous_tag
+                                                _level = tag_match.group(0)
+                                                assistant_content += complete_sentence[len(_level):].strip()
+                                                self._prev_level = _level
                                             else:
-                                                _level = "一般句"
-                                            # complete_sentence = full_content.find(_level)
+                                                if hasattr(self, '_prev_level') and self._prev_level:
+                                                    complete_sentence = self._prev_level + complete_sentence
+                                                else:
+                                                    raise ValueError(f"弹幕互动模式下，句子{complete_sentence}未包含有效标签")
                                         else:
-                                            complete_sentence = full_content[:last_end_idx + 1].strip()
-
-                                        logger.info(f"complete_sentence: {complete_sentence}")
-                                        assistant_content += complete_sentence
+                                            assistant_content += complete_sentence
 
                                         if not is_interact and self.loop_interrupt_flag:
                                             logger.info(

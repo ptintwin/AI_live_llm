@@ -251,26 +251,43 @@ class DanmuService:
         return updated_danmu_cache
 
     @staticmethod
-    def parse_sentence_level(sentence):
+    def extract_level_and_sentence(text, is_interact=True):
         """
-        解析句子等级
+        提取句子中的等级标签和剩余内容
+        将句子中所有"【xx句】"格式的标签提取出来，起始的作为level，其余的删除，返回处理后的句子
 
         Args:
-            sentence: 句子内容
+            text: 原始句子
+            is_interact: 是否为互动句，默认True
         Returns:
-            str: 等级
+            tuple: (level, sentence) 等级和处理后的句子内容
         """
-        match = re.match(r'^【([^】]+)】', sentence)
-        level = "normal"
-        if match:
-            tag = match.group(1)
-            if "必播" in tag:
-                level = "mandatory"
-            elif "重要" in tag:
+        # 匹配所有【xx句】格式的标签
+        pattern = r"【([^】]*句[^】]*)】"
+
+        if is_interact:
+            matches = re.findall(pattern, text)
+            if not matches:
+                return "normal", text
+
+            # 处理第一个匹配项作为level
+            first_match = matches[0]
+            if "一般句" in first_match:
+                level = "normal"
+            elif "重要句" in first_match:
                 level = "important"
+            elif "必播句" in first_match:
+                level = "mandatory"
+            else:
+                level = "normal"
         else:
-            raise ValueError(f"生成的sentence未匹配到起始等级标签：{sentence}")
-        return level
+            level = ""
+
+        # 删除所有的【xx句】标签，保留其他内容
+        cleaned_text = re.sub(pattern, "", text)
+        cleaned_text = cleaned_text.strip()
+
+        return level, cleaned_text
 
     @staticmethod
     async def handle_danmu_queues(max_level, danmu_cache, llm, tts):
@@ -338,7 +355,7 @@ class DanmuService:
             full_answer += sentence
             if config["tts"]["enabled"]:
                 # 解析句子等级
-                level = DanmuService.parse_sentence_level(sentence)
+                level, sentence = DanmuService.extract_level_and_sentence(sentence)
 
                 if not is_queue_cleared:
                     # 清空队列逻辑

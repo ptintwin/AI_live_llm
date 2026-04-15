@@ -191,7 +191,6 @@ class TTSLiveService:
         self.session_id = session_id
         self.callback = TTSStreamCallback(self)
         self.synthesizer = None
-        self.current_playing_level = ""  # 当前正在播放的句子等级
         # 以下是互动弹幕队列
         self.mandatory_queue = asyncio.Queue()  # 必播句队列
         self.important_queue = asyncio.Queue()  # 重要句队列
@@ -251,28 +250,22 @@ class TTSLiveService:
             # 按优先级检查队列
             if not self.mandatory_queue.empty():
                 sentence = await self.mandatory_queue.get()
-                self.current_playing_level = "mandatory"
                 logger.info(f"当前队列大小: {self.mandatory_queue.qsize()}，【必播句】tts播报句子内容: {sentence}")
             elif self.transitional_sentence:
                 sentence = self.transitional_sentence
                 self.transitional_sentence = ""
-                self.current_playing_level = "transitional"
                 logger.info(f"【重要过渡句】tts播报句子内容: {sentence}")
             elif not self.important_queue.empty():
                 sentence = await self.important_queue.get()
-                self.current_playing_level = "important"
                 logger.info(f"当前队列大小: {self.important_queue.qsize()}，【重要句】tts播报句子内容: {sentence}")
             elif not self.normal_queue.empty():
                 sentence = await self.normal_queue.get()
-                self.current_playing_level = "normal"
                 logger.info(f"当前队列大小: {self.normal_queue.qsize()}，【一般句】tts播报句子内容: {sentence}")
             elif not self.loop_queue.empty():
                 sentence = await self.loop_queue.get()
-                self.current_playing_level = "normal"
                 logger.info(f"当前队列大小: {self.loop_queue.qsize()}，【循环播报】tts播报句子内容: {sentence}")
             else:
                 # 所有队列都为空，等待新任务
-                self.current_playing_level = ""  # 重置播放等级
                 await asyncio.sleep(0.1)
                 continue
 
