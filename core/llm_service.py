@@ -82,24 +82,30 @@ class LLMLiveService:
                     # 保留最后一条非assistant消息
                     self.history = [non_assistant_prev[-1]] + self.history
 
-    async def _stream_llm_response(self, prompt: str, is_interact: bool = False) -> AsyncGenerator[str, Any]:
+    async def _stream_llm_response(self, prompt: str, is_interact: bool, danmu_summary: str = "") -> AsyncGenerator[
+        str, Any]:
         """通用LLM流式响应处理
 
         Args:
             prompt: 提示文本
             is_interact: 是否为互动模式
+            danmu_summary: 互动模式下，观众弹幕交互摘要，用于上下文提示
 
         Yields:
             流式生成的文本片段，确保以完整句子为单位
         """
-        # if self.generation_type is not None:
-        #     logger.info(f"会话{self.session_id}当前正在生成{self.generation_type}类型文本，已中断")
 
         self.generation_type = 'live_danmu' if is_interact else 'live_loop'
         logger.info(f"会话{self.session_id}开始生成{self.generation_type}类型文本")
 
+        # 构建用于发送给LLM的消息列表
+        messages = self.fixed_prefix_history + self.history.copy()
+
+        # 对于最新的互动消息，保留完整的INTERACT_PROMPT用于LLM
         if prompt:
-            self.history.append({"role": "user", "content": prompt})
+            _his_content = danmu_summary if is_interact else prompt
+            self.history.append({"role": "user", "content": _his_content})
+            messages.append({"role": "user", "content": prompt})
         self._trim_history()
 
         full_content = ""
@@ -107,11 +113,11 @@ class LLMLiveService:
         chunk_count = 0  # 手动计数，替代 enumerate
         try:
             # 调用通义千问（流式+临时缓存+增量输出）
-            logger.info(f"开始调用LLM：模型={config['llm']['model_name']}，self.history长度={len(self.history)}")
-            # logger.info(f"self.history: {self.history}")
+            logger.info(f"开始调用LLM：模型={config['llm']['model_name']}，消息长度={len(messages)}")
+            logger.info(f"self.history: {self.history}")
             responses = await AioGeneration.call(
                 model=config["llm"]["model_name"],
-                messages=self.fixed_prefix_history + self.history,
+                messages=messages,
                 result_format="message",  # 消息格式输出
                 stream=True,
                 incremental_output=True,  # 关键：设置为True以获取增量输出，性能更佳
@@ -146,7 +152,8 @@ class LLMLiveService:
                                     if last_end_idx != -1:
                                         # logger.info(f"full_content: {full_content}")
                                         complete_sentence = full_content[:last_end_idx + 1].strip()
-                                        logger.info(f"当前“{'弹幕互动' if is_interact else '循环播报'}”模式complete_sentence: {complete_sentence}")
+                                        logger.info(
+                                            f"当前“{'弹幕互动' if is_interact else '循环播报'}”模式complete_sentence: {complete_sentence}")
 
                                         if is_interact:
                                             tag_match = re.match(r'^【([^】]+)】', full_content)
@@ -158,7 +165,8 @@ class LLMLiveService:
                                                 if hasattr(self, '_prev_level') and self._prev_level:
                                                     complete_sentence = self._prev_level + complete_sentence
                                                 else:
-                                                    raise ValueError(f"弹幕互动模式下，句子{complete_sentence}未包含有效标签")
+                                                    raise ValueError(
+                                                        f"弹幕互动模式下，句子{complete_sentence}未包含有效标签")
                                         else:
                                             assistant_content += complete_sentence
 
@@ -228,7 +236,7 @@ class LLMLiveService:
                 else:
                     # 较早的交互，较低照顾度
                     prompt += "，【重要提醒】请参考早期观众弹幕交互内容"
-        async for chunk in self._stream_llm_response(prompt, is_interact=False):
+        async for chunk in self._stream_llm_response(prompt, False):
             yield chunk
         if self.user_focus_cycle > 0:
             # 值越大表示最新“观众交互”轮次越远，照顾程度越低
@@ -244,17 +252,14 @@ class LLMLiveService:
             username = getattr(danmu, 'username', '观众')
             content = getattr(danmu, 'content', '')
             danmu_type = getattr(danmu, 'type', '')
-            level = getattr(danmu, 'level', 'normal')
 
-            # 根据等级添加前缀
-            level_prefix = "" if level == "normal" else f"【{level}】"
             prefix_map = {'question': "【互动问题类】", 'gift': "【礼物灯牌类】", 'enter': "【进入直播间】",
                           'follow': "【关注或点赞类】"}
             suffix_pmt = f"观众‘{username}’：{content}\n" if danmu_type == 'question' else f"观众‘{username}’{content}\n"
-            danmu_summary += (level_prefix + prefix_map[danmu_type] + suffix_pmt)
+            danmu_summary += (prefix_map[danmu_type] + suffix_pmt)
 
         prompt = INTERACT_PROMPT.format(danmu_summary=danmu_summary)
-        async for chunk in self._stream_llm_response(prompt, is_interact=True):
+        async for chunk in self._stream_llm_response(prompt, True, danmu_summary=danmu_summary):
             yield chunk
         self.user_focus_cycle = 1
 

@@ -57,7 +57,6 @@ async def start_stream(req: StartStreamRequest, background_tasks: BackgroundTask
                 await asyncio.sleep(1.0)
 
             # 标记是否正在生成文本
-            is_generating = False
             while session_id in SESSIONS:
                 if llm_service.loop_interrupt_flag:
                     if llm_service.generation_type != "live_danmu" and tts_service.is_prepare_loop():
@@ -68,12 +67,12 @@ async def start_stream(req: StartStreamRequest, background_tasks: BackgroundTask
                         continue
 
                 # 检查循环播报队列大小，如果小于等于3且不在生成中，开始下一轮生成
-                if config["tts"]["enabled"] and tts_service.get_loop_queue_size() <= 3 and not is_generating:
+                if config["tts"]["enabled"] and tts_service.get_loop_queue_size() <= 3:
                     # 流式生成段落并添加到队列（异步非阻塞）
                     logger.info(f"会话{session_id}开始第 {llm_service.cycle_count + 1} 轮循环讲解")
                     # 实时流式生成句子并添加到队列
                     async for sentence in llm_service.generate_stream_paragraph():
-                        _, sentence = DanmuService.extract_level_and_sentence(sentence, is_interact=False)
+                        # _, sentence = DanmuService.extract_level_and_sentence(sentence, is_interact=False)
 
                         # 检查中断标志
                         if llm_service.loop_interrupt_flag:
@@ -89,6 +88,7 @@ async def start_stream(req: StartStreamRequest, background_tasks: BackgroundTask
                         if llm_service.loop_interrupt_flag:
                             logger.info(f"会话{session_id}检测到中断标志，停止当前轮次讲解")
                             break
+                await asyncio.sleep(1)
         except Exception as e:
             logger.error(f"会话{session_id}直播循环异常：{traceback.format_exc()}")
         finally:

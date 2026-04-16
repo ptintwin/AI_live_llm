@@ -396,7 +396,7 @@ class TTSLiveService:
             logger.warning(f"会话{self.session_id}检测到交互队列总和为1，但循环播报队列不为空，请检查代码逻辑")
 
         # 检查是否满足条件
-        return loop_queue_empty and interact_queue_sum == 1
+        return loop_queue_empty and interact_queue_sum <= 1
 
     def clear_loop_queue(self):
         """清空循环播报队列"""

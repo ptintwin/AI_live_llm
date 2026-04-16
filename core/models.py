@@ -11,7 +11,7 @@ class DanmuItem(BaseModel):
     content: str = Field(..., description="弹幕内容")
     type: str = Field(..., description="弹幕类型")
     danmu_time: str = Field(..., description="弹幕时间，格式为YYYY-MM-DD HH:MM:SS")
-    level: Optional[str] = Field(None, description="弹幕等级：mandatory（必播）、important（重要）、normal（一般）")
+    level: Optional[str] = Field("", description="弹幕等级：mandatory（必播）、important（重要）、normal（一般）")
 
 
 class StartStreamRequest(BaseModel):
