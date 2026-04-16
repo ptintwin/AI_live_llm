@@ -28,8 +28,9 @@ with open("./config/config.yaml", "r", encoding="utf-8") as f:
 # 初始化FastAPI
 app = FastAPI(title="抖音游戏主播直播互动系统", version="1.0")
 
-# 全局会话管理（session_id: {llm, tts task}）
+# 全局会话管理（session_id: {llm, tts task, danmu_lock, danmu_task}）
 SESSIONS = {}
+
 
 # ------------------- 核心接口 -------------------
 @app.get("/health_check", summary="服务健康检查")
@@ -94,14 +95,51 @@ async def start_stream(req: StartStreamRequest, background_tasks: BackgroundTask
         finally:
             await stop_session(StopSessionRequest(session_id=session_id))
 
+    # 弹幕处理循环
+    async def danmu_processing_loop():
+        try:
+            danmu_service = DanmuService()
+            while session_id in SESSIONS:
+                # 检查danmu_cache是否有内容
+                async with SESSIONS[session_id]["danmu_lock"]:
+                    has_danmu = len(SESSIONS[session_id]["danmu_cache"]) > 0
+
+                if has_danmu:
+                    # 中断live_loop
+                    llm_service.set_loop_interrupt(True)
+
+                    # 拷贝并清空danmu_cache
+                    async with SESSIONS[session_id]["danmu_lock"]:
+                        danmu_cache = SESSIONS[session_id]["danmu_cache"].copy()
+                        SESSIONS[session_id]["danmu_cache"] = []
+
+                    logger.info(f"会话{session_id}开始处理弹幕缓存：{len(danmu_cache)}条弹幕")
+
+                    # 获取最高等级
+                    max_level = DanmuService.get_max_level(danmu_cache)
+
+                    # 处理弹幕队列
+                    await danmu_service.handle_danmu_queues(max_level, danmu_cache, llm_service, tts_service)
+
+                    logger.info(f"会话{session_id}弹幕处理完成")
+
+                await asyncio.sleep(0.5)
+        except Exception as e:
+            logger.error(f"会话{session_id}弹幕处理循环异常：{traceback.format_exc()}")
+        finally:
+            await stop_session(StopSessionRequest(session_id=session_id))
+
     # 保存会话
     task = asyncio.create_task(live_loop())
+    danmu_task = asyncio.create_task(danmu_processing_loop())
     SESSIONS[session_id] = {
         "llm": llm_service,
         "tts": tts_service,
         "room_id": req.room_id,
         "danmu_cache": [],
+        "danmu_lock": asyncio.Lock(),
         "task": task,
+        "danmu_task": danmu_task,
         "created_at": datetime.now()
     }
 
@@ -115,52 +153,19 @@ async def live_danmu(req: LiveDanmuRequest):
         return {"error": "会话不存在"}
 
     try:
-        llm: LLMLiveService = session["llm"]
-        tts: TTSLiveService = session["tts"]
         danmu_service = DanmuService()
 
-        llm.set_loop_interrupt(True)
-        if llm.generation_type == "live_loop":
-            llm.set_generation_type(None)
+        # 处理弹幕等级分类和缓存更新
+        async with session["danmu_lock"]:
+            session["danmu_cache"] = await danmu_service.process_and_update_danmu(req.danmu_list,
+                                                                                  session["danmu_cache"])
+            updated_cache = session["danmu_cache"].copy()
 
-        is_danmu_llm_generating, has_interact_queue_items = danmu_service.check_live_danmu_in_progress(llm, tts)
-        logger.info(f"当前是否有弹幕交互文本在生成: {is_danmu_llm_generating}, 当前弹幕交互队列是否有待播报句子: {has_interact_queue_items}")
-        if not (is_danmu_llm_generating or has_interact_queue_items):
-            logger.info("上一次live_danmu调用已执行完或首次执行，直接处理新弹幕")
-            # 准备处理互动回复
-            full_answer = ""
-            loop_queue_cleared = False
-
-            logger.info(f"开始处理弹幕请求：{req.danmu_list}")
-            async for sentence in llm.handle_interact(req.danmu_list):
-                if config["tts"]["enabled"]:
-                    level, sentence = DanmuService.extract_level_and_sentence(sentence)
-
-                    tts.add_to_danmu_queue(sentence, level)
-                    if not loop_queue_cleared and not (tts.mandatory_queue.empty() and tts.important_queue.empty() and tts.normal_queue.empty()):
-                        # 只有在互动队列不为空时才清空循环播报队列，避免两个队列都为空，播报停滞
-                        tts.clear_loop_queue()
-                        loop_queue_cleared = True
-                else:
-                    logger.info(f"互动回复: {sentence}")
-
-                full_answer += sentence
-
-            return {"session_id": req.session_id, "answer": full_answer}
-        else:
-            logger.info("上一次live_danmu调用还未执行完，做进一步弹幕交互处理...")
-            # 处理弹幕等级分类和缓存更新
-            session["danmu_cache"] = await danmu_service.process_and_update_danmu(req.danmu_list, session["danmu_cache"])
-            if is_danmu_llm_generating:
-                return {"session_id": req.session_id, "answer": "上一轮互动弹幕文本正在生成中，已将当前弹幕缓存，稍后处理"}
-            elif has_interact_queue_items:
-                logger.info(f"当前上一轮互动弹幕文本生成已完成，开始处理最新danmu_cache弹幕请求：{session['danmu_cache']}")
-                max_level = DanmuService.get_max_level(session["danmu_cache"])
-                full_answer = await danmu_service.handle_danmu_queues(max_level, session["danmu_cache"], llm, tts)
-
-                return {"session_id": req.session_id, "answer": full_answer}
+        logger.info(f"弹幕处理完成，已缓存 {len(updated_cache)} 条弹幕")
+        return {"session_id": req.session_id, "danmu_cache": updated_cache}
     except Exception as e:
         logger.error(f"会话{req.session_id}处理弹幕互动异常：{traceback.print_exc()}")
+        return {"error": str(e)}
 
 
 @app.post("/switch_voice_role", summary="切换到某个声音角色")
@@ -193,6 +198,8 @@ async def stop_session(req: StopSessionRequest):
 
     # 清理资源
     session["task"].cancel()
+    if "danmu_task" in session:
+        session["danmu_task"].cancel()
     session["tts"].close()
     logger.info(f"会话{req.session_id}已停止并清理")
     return {"session_id": req.session_id, "status": "stopped"}
