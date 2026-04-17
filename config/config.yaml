@@ -28,7 +28,7 @@ live:
   max_cycle_focus: 3  # 前3次循环纳入观众关注点
   default_background: "你是一名激情的抖音游戏主播，正在讲解爆款仙侠手游，引导下载、充值、互动"
   danmu_cache:
-    max_seconds: 30 # 缓存弹幕最大秒数
+    max_seconds: 50 # 缓存弹幕最大秒数
     max_nums: 15 # 缓存弹幕最大条数
 
 

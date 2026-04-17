@@ -89,7 +89,7 @@ async def start_stream(req: StartStreamRequest, background_tasks: BackgroundTask
                         if llm_service.loop_interrupt_flag:
                             logger.info(f"会话{session_id}检测到中断标志，停止当前轮次讲解")
                             break
-                await asyncio.sleep(1)
+                await asyncio.sleep(1.0)
         except Exception as e:
             logger.error(f"会话{session_id}直播循环异常：{traceback.format_exc()}")
         finally:
@@ -115,10 +115,7 @@ async def start_stream(req: StartStreamRequest, background_tasks: BackgroundTask
 
                     logger.info(f"会话{session_id}开始处理弹幕缓存：{len(danmu_cache)}条弹幕")
 
-                    # 获取最高等级
                     max_level = DanmuService.get_max_level(danmu_cache)
-
-                    # 处理弹幕队列
                     await danmu_service.handle_danmu_queues(max_level, danmu_cache, llm_service, tts_service)
 
                     logger.info(f"会话{session_id}弹幕处理完成")
@@ -147,22 +144,36 @@ async def start_stream(req: StartStreamRequest, background_tasks: BackgroundTask
 
 
 @app.post("/live_danmu", summary="直播间弹幕互动")
-async def live_danmu(req: LiveDanmuRequest):
+async def live_danmu(req: LiveDanmuRequest, background_tasks: BackgroundTasks):
     session = SESSIONS.get(req.session_id)
     if not session:
         return {"error": "会话不存在"}
 
     try:
-        danmu_service = DanmuService()
+        # 立即返回，弹幕处理在后台进行
+        logger.info(f"开始处理弹幕等级分类，原始弹幕数量: {len(req.danmu_list)}")
 
-        # 处理弹幕等级分类和缓存更新
-        async with session["danmu_lock"]:
-            session["danmu_cache"] = await danmu_service.process_and_update_danmu(req.danmu_list,
-                                                                                  session["danmu_cache"])
-            updated_cache = session["danmu_cache"].copy()
+        # 后台任务处理弹幕等级识别和缓存更新
+        async def process_danmu_background():
+            try:
+                # 处理弹幕
+                processed_danmu_list = await DanmuService.process_danmu(req.danmu_list)
+                logger.info(f"处理弹幕等级分类完成，处理后弹幕数量: {len(processed_danmu_list)}")
 
-        logger.info(f"弹幕处理完成，已缓存 {len(updated_cache)} 条弹幕")
-        return {"session_id": req.session_id, "danmu_cache": updated_cache}
+                # 更新弹幕缓存
+                async with session["danmu_lock"]:
+                    session["danmu_cache"] = DanmuService.update_danmu_cache(session["danmu_cache"], processed_danmu_list)
+                    updated_cache_size = len(session["danmu_cache"])
+
+                logger.info(f"弹幕处理完成，已缓存 {updated_cache_size} 条弹幕")
+            except Exception as e:
+                logger.error(f"会话{req.session_id}后台处理弹幕互动异常：{traceback.print_exc()}")
+
+        # 添加后台任务
+        background_tasks.add_task(process_danmu_background)
+
+        # 立即返回，不等待处理完成
+        return {"session_id": req.session_id, "status": "processing", "message": "弹幕处理已开始"}
     except Exception as e:
         logger.error(f"会话{req.session_id}处理弹幕互动异常：{traceback.print_exc()}")
         return {"error": str(e)}

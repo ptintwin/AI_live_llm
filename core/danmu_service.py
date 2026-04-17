@@ -142,7 +142,7 @@ class DanmuService:
         _max_seconds = int(config["live"]["danmu_cache"]["max_seconds"])
         current_time = datetime.now()
         danmu_cache = [danmu for danmu in danmu_cache if (current_time - datetime.strptime(danmu.danmu_time, "%Y-%m-%d %H:%M:%S")).total_seconds() <= _max_seconds]
-        logger.info(f"更新弹幕缓存，过滤后缓存大小：{len(danmu_cache)}")
+        logger.info(f"按最长留存时间{_max_seconds}秒过滤后当前danmu_cache互动弹幕数量：{len(danmu_cache)}")
 
         # 按时间从新到旧排序
         danmu_cache.sort(key=lambda x: datetime.strptime(x.danmu_time, "%Y-%m-%d %H:%M:%S"), reverse=True)
@@ -151,7 +151,7 @@ class DanmuService:
         _max_nums = int(config["live"]["danmu_cache"]["max_nums"])
         if len(danmu_cache) > _max_nums:
             danmu_cache = danmu_cache[:_max_nums]
-        logger.info(f"更新弹幕缓存，最多保留{_max_nums}条弹幕，当前缓存大小：{len(danmu_cache)}")
+        logger.info(f"按最多保留{_max_nums}条弹幕过滤后当前danmu_cache互动弹幕数量：{len(danmu_cache)}")
 
         return danmu_cache
 
@@ -199,16 +199,14 @@ class DanmuService:
         return [is_danmu_llm_generating, has_interact_queue_items]
 
     @staticmethod
-    async def process_and_update_danmu(danmu_list, danmu_cache) -> tuple:
+    async def process_danmu(danmu_list) -> list:
         """
-        处理弹幕等级分类和缓存更新
+        处理弹幕等级分类
         Args:
             danmu_list: 原始弹幕列表
-            danmu_cache: 原弹幕缓存
         Returns:
-            updated_danmu_cache: 更新后的弹幕缓存
+            list: 处理后的弹幕列表
         """
-        logger.info(f"开始处理弹幕等级分类和缓存更新，原始弹幕数量: {len(danmu_list)}")
         processed_danmu_list = []
         question_danmus, non_question_danmus = DanmuService.process_danmu_list(danmu_list)
 
@@ -244,11 +242,8 @@ class DanmuService:
             )
             processed_danmu_list.append(processed_danmu)
 
-        # 更新danmu_cache
-        updated_danmu_cache = DanmuService.update_danmu_cache(danmu_cache, processed_danmu_list)
-        logger.info(f"更新弹幕缓存后，当前缓存弹幕数量: {len(updated_danmu_cache)}")
-
-        return updated_danmu_cache
+        logger.info(f"处理弹幕等级分类完成，处理后弹幕数量: {len(processed_danmu_list)}")
+        return processed_danmu_list
 
     @staticmethod
     def extract_level_and_sentence(text, is_interact=True):
@@ -358,7 +353,6 @@ class DanmuService:
                 level, sentence = DanmuService.extract_level_and_sentence(sentence)
 
                 if not is_queue_cleared:
-                    # 清空队列逻辑
                     if level == "mandatory":
                         await tts.clear_interact_queues(clear_important=True, clear_normal=True)
                     else:
@@ -370,6 +364,8 @@ class DanmuService:
 
                 # 添加到相应等级的队列
                 tts.add_to_danmu_queue(sentence, level)
+                if not tts.loop_queue.empty():
+                    tts.clear_loop_queue()
             else:
                 logger.info(f"互动回复: {sentence}")
 
