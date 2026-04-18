@@ -23,13 +23,13 @@ class DanmuService:
 
     def __init__(self, room_config: dict = None):
         rc = room_config or {}
-        self.model_name         = rc.get("modelName")        or config["llm"]["model_name"]
+        self.model_name = rc.get("modelName") or config["llm"]["model_name"]
         self.danmu_level_prompt = rc.get("danmuLevelPrompt") or DANMU_LEVEL_PROMPT
-        self.tts_enabled        = rc.get("ttsEnabled")
+        self.tts_enabled = rc.get("ttsEnabled")
         if self.tts_enabled is None:
             self.tts_enabled = config["tts"]["enabled"]
-        self.danmu_max_seconds  = int(rc.get("danmuCacheMaxSeconds") or config["live"]["danmu_cache"]["max_seconds"])
-        self.danmu_max_nums     = int(rc.get("danmuCacheMaxNums")    or config["live"]["danmu_cache"]["max_nums"])
+        self.danmu_max_seconds = int(rc.get("danmuCacheMaxSeconds") or config["live"]["danmu_cache"]["max_seconds"])
+        self.danmu_max_nums = int(rc.get("danmuCacheMaxNums") or config["live"]["danmu_cache"]["max_nums"])
 
     @timer
     async def identify_levels(self, contents: list) -> list:
@@ -72,7 +72,8 @@ class DanmuService:
                 # 解析返回结果，确保每条弹幕都有对应的等级
                 lines = result.strip().split('\n')
                 levels = []
-                valid_levels = ["充值类问题", "下载类问题", "礼物灯牌类", "专业提问类", "游戏相关普通问题", "其它闲聊问题", "关注或点赞类", "进入直播间类"]
+                valid_levels = ["充值类问题", "下载类问题", "礼物灯牌类", "专业提问类", "游戏相关普通问题",
+                                "其它闲聊问题", "关注或点赞类", "进入直播间类"]
 
                 for line in lines:
                     # 提取等级类型
@@ -84,10 +85,11 @@ class DanmuService:
                         logger.error(f"弹幕类型解析匹配失败: {level}")
                         levels.append("其它闲聊问题")
 
-                assert len(levels) == len(contents), f"识别等级数量与输入内容数量不一致: {len(levels)} != {len(contents)}"
+                assert len(levels) == len(
+                    contents), f"识别等级数量与输入内容数量不一致: {len(levels)} != {len(contents)}"
 
                 logger.info(f"danmu_cache里的question弹幕等级识别完成，识别结果: {levels}")
-                return levels # 截断到与输入相同长度
+                return levels  # 截断到与输入相同长度
 
             # 默认返回其它闲聊问题列表
             logger.info(f"danmu_cache里的question弹幕等级识别失败，原始内容: {contents}")
@@ -148,7 +150,8 @@ class DanmuService:
         # 过滤掉超过_max_seconds秒的弹幕
         logger.info(f"更新弹幕缓存，当前缓存大小：{len(danmu_cache)}")
         current_time = datetime.now()
-        danmu_cache = [danmu for danmu in danmu_cache if (current_time - datetime.strptime(danmu.danmu_time, "%Y-%m-%d %H:%M:%S")).total_seconds() <= self.danmu_max_seconds]
+        danmu_cache = [danmu for danmu in danmu_cache if (current_time - datetime.strptime(danmu.danmu_time,
+                                                                                           "%Y-%m-%d %H:%M:%S")).total_seconds() <= self.danmu_max_seconds]
         logger.info(f"按最长留存时间{self.danmu_max_seconds}秒过滤后当前danmu_cache互动弹幕数量：{len(danmu_cache)}")
 
         # 按时间从新到旧排序
@@ -374,3 +377,21 @@ class DanmuService:
                 logger.info(f"互动回复: {sentence}")
 
         return full_answer
+
+    def update_config(self, room_config: dict):
+        """更新服务配置
+
+        Args:
+            room_config: 新的直播间配置
+        """
+        rc = room_config or {}
+        # 更新配置
+        self.model_name = rc.get("modelName") or config["llm"]["model_name"]
+        self.danmu_level_prompt = rc.get("danmuLevelPrompt") or DANMU_LEVEL_PROMPT
+        self.tts_enabled = rc.get("ttsEnabled")
+        if self.tts_enabled is None:
+            self.tts_enabled = config["tts"]["enabled"]
+        self.danmu_max_seconds = int(rc.get("danmuCacheMaxSeconds") or config["live"]["danmu_cache"]["max_seconds"])
+        self.danmu_max_nums = int(rc.get("danmuCacheMaxNums") or config["live"]["danmu_cache"]["max_nums"])
+
+        logger.info(f"DanmuService配置已更新")

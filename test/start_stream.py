@@ -17,8 +17,7 @@ def test_health():
 def test_start_stream():
     """测试开启直播"""
     resp = requests.post(f"{BASE_URL}/start_stream", json={
-        "room_id": "你的抖音直播间ID",
-        "background": "讲解仙侠手游，引导下载充值"
+        "room_id": "123456"
     })
     if resp.status_code == 200:
         data = resp.json()

@@ -30,19 +30,7 @@ app = FastAPI(title="抖音游戏主播直播互动系统", version="1.0")
 
 # 全局会话管理（session_id: {llm, tts task, danmu_lock, danmu_task}）
 SESSIONS = {}
-
 SPRING_BASE_URL = config["spring_boot"]["base_url"]
-
-
-async def fetch_room_llm_config(room_id: str) -> dict:
-    """从 Spring Boot 后端读取直播间 LLM 配置"""
-    url = f"{SPRING_BASE_URL}/api/rooms/{room_id}/llm-config"
-    async with httpx.AsyncClient(timeout=10.0) as client:
-        resp = await client.get(url)
-        resp.raise_for_status()
-        data = resp.json()
-        return data.get("data") or {}
-
 
 # ------------------- 核心接口 -------------------
 @app.get("/health_check", summary="服务健康检查")
@@ -50,19 +38,35 @@ async def health_check():
     return {"status": "ok", "sessions_count": len(SESSIONS)}
 
 
+async def fetch_room_llm_config(room_id: str) -> dict:
+    """从 Spring Boot 后端读取直播间 LLM 配置"""
+    url = f"{SPRING_BASE_URL}/api/rooms/{room_id}/llm-config"
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            resp = await client.get(url)
+            resp.raise_for_status()
+            data = resp.json()
+            return data.get("data") or {}
+    except Exception as e:
+        logger.warning(f"基于Spring Boot后端接口获取配置失败，改为读取本地默认配置：{e}")
+        return {}
+
+
 @app.post("/start_stream", summary="开启流式直播讲解")
 async def start_stream(req: StartStreamRequest, background_tasks: BackgroundTasks):
-    session_id = req.session_id
-    logger.info(f"创建新会话：{session_id}，直播间：{req.room_id}")
+    if not req.session_id:
+        session_id = str(uuid.uuid4())
+        logger.info(f"前端未传入session_id，自主创建：{session_id}，直播间id：{req.room_id}")
+    else:
+        session_id = req.session_id
+        logger.info(f"获取到前端传入session_id：{session_id}，直播间id：{req.room_id}")
 
     # 从数据库读取直播间 LLM 配置
-    try:
-        room_config = await fetch_room_llm_config(req.room_id)
-        logger.info(f"会话{session_id}成功读取直播间{req.room_id}的LLM配置")
-    except Exception as e:
-        logger.warning(f"会话{session_id}读取LLM配置失败，使用默认值：{e}")
-        room_config = {}
-
+    room_config = await fetch_room_llm_config(req.room_id)
+    if room_config:
+        logger.info(f"room_config: {room_config}")
+    else:
+        logger.warning(f"改为读取本地默认配置")
     # 初始化核心服务（使用直播间专属配置）
     llm_service = LLMLiveService(session_id, room_config)
     tts_service = TTSLiveService(session_id, room_config)
@@ -89,8 +93,6 @@ async def start_stream(req: StartStreamRequest, background_tasks: BackgroundTask
                     logger.info(f"会话{session_id}开始第 {llm_service.cycle_count + 1} 轮循环讲解")
                     # 实时流式生成句子并添加到队列
                     async for sentence in llm_service.generate_stream_paragraph():
-                        # _, sentence = DanmuService.extract_level_and_sentence(sentence, is_interact=False)
-
                         # 检查中断标志
                         if llm_service.loop_interrupt_flag:
                             logger.info(f"会话{session_id}检测到中断标志，停止当前轮次讲解")
@@ -180,7 +182,7 @@ async def live_danmu(req: LiveDanmuRequest, background_tasks: BackgroundTasks):
 
                 # 更新弹幕缓存
                 async with session["danmu_lock"]:
-                    session["danmu_cache"] = DanmuService.update_danmu_cache(session["danmu_cache"], processed_danmu_list)
+                    session["danmu_cache"] = session["danmu_service"].update_danmu_cache(session["danmu_cache"], processed_danmu_list)
                     updated_cache_size = len(session["danmu_cache"])
 
                 logger.info(f"弹幕处理完成，已缓存 {updated_cache_size} 条弹幕")
@@ -232,6 +234,35 @@ async def stop_session(req: StopSessionRequest):
     session["tts"].close()
     logger.info(f"会话{req.session_id}已停止并清理")
     return {"session_id": req.session_id, "status": "stopped"}
+
+
+@app.post("/update_llm_config", summary="更新直播间配置")
+async def update_config(req: UpdateConfigRequest):
+    """
+    更新直播间配置接口
+    当后端配置数据库更新后，通过此接口触发配置刷新
+    """
+    session = SESSIONS.get(req.session_id)
+    if not session:
+        return {"error": "会话不存在"}
+
+    try:
+        # 重新获取配置
+        room_config = await fetch_room_llm_config(req.room_id)
+        if not room_config:
+            return {"session_id": req.session_id, "status": "failed"}
+
+        # 更新各服务实例的配置
+        logger.info(f"为会话{req.session_id}更新配置: {room_config}")
+        session["llm"].update_config(room_config)
+        session["tts"].update_config(room_config)
+        session["danmu_service"].update_config(room_config)
+
+        logger.info(f"会话{req.session_id}配置更新成功")
+        return {"session_id": req.session_id, "status": "success", "config": room_config}
+    except Exception as e:
+        logger.error(f"更新配置失败: {e}")
+        return {"error": str(e), "status": "failed"}
 
 
 @app.get("/shutdown_all", summary="关闭所有会话")

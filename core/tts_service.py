@@ -192,11 +192,11 @@ class TTSLiveService:
         rc = room_config or {}
         self.session_id = session_id
         tts_enabled = rc.get("ttsEnabled")
-        self.tts_enabled     = tts_enabled if tts_enabled is not None else config["tts"]["enabled"]
-        self.tts_model_name  = rc.get("ttsModelName")  or config["tts"]["model_name"]
-        self.tts_voice_id    = rc.get("ttsVoiceId")    or config["tts"]["voice_id"]
+        self.tts_enabled = tts_enabled if tts_enabled is not None else config["tts"]["enabled"]
+        self.tts_model_name = rc.get("ttsModelName") or config["tts"]["model_name"]
+        self.tts_voice_id = rc.get("ttsVoiceId") or config["tts"]["voice_id"]
         self.tts_speech_rate = float(rc.get("ttsSpeechRate") or config["tts"]["speech_rate"])
-        self.tts_pitch_rate  = float(rc.get("ttsPitchRate")  or config["tts"]["pitch_rate"])
+        self.tts_pitch_rate = float(rc.get("ttsPitchRate") or config["tts"]["pitch_rate"])
         self.tts_instruction = rc.get("ttsInstruction") or TTS_INSTRUCTION
         self.callback = TTSStreamCallback(self)
         self.synthesizer = None
@@ -495,3 +495,44 @@ class TTSLiveService:
         # 关闭音频回调
         self.callback.close()
         logger.info(f"会话{self.session_id}TTS服务已关闭")
+
+    def update_config(self, room_config: dict):
+        """更新服务配置
+
+        Args:
+            room_config: 新的直播间配置
+        """
+        rc = room_config or {}
+        # 更新TTS配置
+        tts_enabled = rc.get("ttsEnabled")
+        self.tts_enabled = tts_enabled if tts_enabled is not None else config["tts"]["enabled"]
+        self.tts_model_name = rc.get("ttsModelName") or config["tts"]["model_name"]
+        self.tts_voice_id = rc.get("ttsVoiceId") or config["tts"]["voice_id"]
+        self.tts_speech_rate = float(rc.get("ttsSpeechRate") or config["tts"]["speech_rate"])
+        self.tts_pitch_rate = float(rc.get("ttsPitchRate") or config["tts"]["pitch_rate"])
+        self.tts_instruction = rc.get("ttsInstruction") or TTS_INSTRUCTION
+
+        # 重新初始化synthesizer以应用新配置，但要确保当前播报完成
+        async def update_synthesizer():
+            # 检查是否正在播报
+            if self.callback and self.callback.playing:
+                logger.info("当前正在TTS播报，等待播报完成后再更新配置")
+                # 等待当前播报完成
+                try:
+                    await asyncio.wait_for(self.callback.play_completed.wait(), timeout=30.0)
+                except asyncio.TimeoutError:
+                    logger.warning("等待播报完成超时，强制更新配置")
+
+            # 关闭并重新初始化synthesizer
+            if self.synthesizer:
+                self._close_synthesizer()
+                if self.tts_enabled:
+                    await self.start_streaming()
+            elif self.tts_enabled:
+                # 如果之前没有synthesizer但现在启用了TTS
+                await self.start_streaming()
+
+            logger.info(f"TTSLiveService配置已更新")
+
+        # 异步执行更新
+        asyncio.create_task(update_synthesizer())

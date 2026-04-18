@@ -66,3 +66,6 @@ MANIFEST
 .DS_Store
 Thumbs.db
 
+# 模型数据大文件
+embedding_models/
+data/

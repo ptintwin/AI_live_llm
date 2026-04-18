@@ -16,7 +16,7 @@ class DanmuItem(BaseModel):
 
 class StartStreamRequest(BaseModel):
     room_id: str = Field(..., description="直播间ID（数据库内部ID）")
-    session_id: str = Field(..., description="开播会话ID（由 Spring Boot 生成的 UUID）")
+    session_id: str = Field("", description="前端传入的唯一session_id")
 
 
 class LiveDanmuRequest(BaseModel):
@@ -49,3 +49,8 @@ class TTSRequest(BaseModel):
 class DanmuLevelRequest(BaseModel):
     content: str = Field(..., description="弹幕内容")
     type: str = Field(..., description="弹幕类型")
+
+
+class UpdateConfigRequest(BaseModel):
+    room_id: str = Field(..., description="直播间ID（数据库内部ID）")
+    session_id: str = Field(..., description="直播间唯一会话ID")

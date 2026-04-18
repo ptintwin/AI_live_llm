@@ -284,3 +284,42 @@ class LLMLiveService:
     def set_generation_type(self, _type: str):
         """设置当前生成任务类型"""
         self.generation_type = _type
+
+    def update_config(self, room_config: dict):
+        """更新服务配置
+
+        Args:
+            room_config: 新的直播间配置
+        """
+        rc = room_config or {}
+        # 更新运行时参数：房间配置优先，回退 config.yaml
+        self.model_name = rc.get("modelName") or config["llm"]["model_name"]
+        self.temperature = float(rc.get("temperature") or config["llm"]["temperature"])
+        self.max_history = int(rc.get("maxHistory") or config["llm"]["max_history"])
+        self.max_cycle_focus = int(rc.get("maxCycleFocus") or config["live"]["max_cycle_focus"])
+
+        # 更新Prompt模板：房间配置优先，回退 prompts.py 默认值
+        system_prompt    = rc.get("systemPrompt")    or SYSTEM_PROMPT
+        live_background  = rc.get("liveBackground")  or CURRENT_LIVE_ROOM_PROMPT
+        self.continue_prompt     = rc.get("continuePrompt")    or CONTINUE_PROMPT
+        self.interact_prompt     = rc.get("interactPrompt")    or INTERACT_PROMPT
+        self.danmu_level_prompt  = rc.get("danmuLevelPrompt")  or DANMU_LEVEL_PROMPT
+
+        # 更新固定前缀历史
+        self.fixed_prefix_history = [
+            {
+                "role": "system",
+                "content": [
+                    {
+                        "type": "text",
+                        "text": system_prompt,
+                        "cache_control": {"type": "ephemeral"}
+                    },
+                    {
+                        "type": "text",
+                        "text": f"【当前直播间背景信息】{live_background}"
+                    }
+                ]
+            }
+        ]
+        logger.info(f"LLMLiveService配置已更新")
