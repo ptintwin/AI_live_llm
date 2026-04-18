@@ -21,9 +21,18 @@ with open("./config/config.yaml", "r", encoding="utf-8") as f:
 class DanmuService:
     """弹幕处理服务类"""
 
-    @staticmethod
+    def __init__(self, room_config: dict = None):
+        rc = room_config or {}
+        self.model_name         = rc.get("modelName")        or config["llm"]["model_name"]
+        self.danmu_level_prompt = rc.get("danmuLevelPrompt") or DANMU_LEVEL_PROMPT
+        self.tts_enabled        = rc.get("ttsEnabled")
+        if self.tts_enabled is None:
+            self.tts_enabled = config["tts"]["enabled"]
+        self.danmu_max_seconds  = int(rc.get("danmuCacheMaxSeconds") or config["live"]["danmu_cache"]["max_seconds"])
+        self.danmu_max_nums     = int(rc.get("danmuCacheMaxNums")    or config["live"]["danmu_cache"]["max_nums"])
+
     @timer
-    async def identify_levels(contents: list) -> list:
+    async def identify_levels(self, contents: list) -> list:
         """
         批量识别弹幕等级类型
 
@@ -35,11 +44,11 @@ class DanmuService:
         try:
             # 构建批量识别prompt
             content_list_str = "\n".join([f"{i + 1}. {content}" for i, content in enumerate(contents)])
-            level_prompt = DANMU_LEVEL_PROMPT.format(contents=content_list_str)
+            level_prompt = self.danmu_level_prompt.format(contents=content_list_str)
 
             # 调用LLM进行等级识别
             responses = await AioGeneration.call(
-                model=config["llm"]["model_name"],
+                model=self.model_name,
                 messages=[
                     {
                         "role": "system",
@@ -123,8 +132,7 @@ class DanmuService:
         }
         return level_map.get(level, "normal")
 
-    @staticmethod
-    def update_danmu_cache(danmu_cache, new_danmus):
+    def update_danmu_cache(self, danmu_cache, new_danmus):
         """
         更新弹幕缓存
 
@@ -139,19 +147,17 @@ class DanmuService:
 
         # 过滤掉超过_max_seconds秒的弹幕
         logger.info(f"更新弹幕缓存，当前缓存大小：{len(danmu_cache)}")
-        _max_seconds = int(config["live"]["danmu_cache"]["max_seconds"])
         current_time = datetime.now()
-        danmu_cache = [danmu for danmu in danmu_cache if (current_time - datetime.strptime(danmu.danmu_time, "%Y-%m-%d %H:%M:%S")).total_seconds() <= _max_seconds]
-        logger.info(f"按最长留存时间{_max_seconds}秒过滤后当前danmu_cache互动弹幕数量：{len(danmu_cache)}")
+        danmu_cache = [danmu for danmu in danmu_cache if (current_time - datetime.strptime(danmu.danmu_time, "%Y-%m-%d %H:%M:%S")).total_seconds() <= self.danmu_max_seconds]
+        logger.info(f"按最长留存时间{self.danmu_max_seconds}秒过滤后当前danmu_cache互动弹幕数量：{len(danmu_cache)}")
 
         # 按时间从新到旧排序
         danmu_cache.sort(key=lambda x: datetime.strptime(x.danmu_time, "%Y-%m-%d %H:%M:%S"), reverse=True)
 
         # 只保留最近_max_nums 条弹幕
-        _max_nums = int(config["live"]["danmu_cache"]["max_nums"])
-        if len(danmu_cache) > _max_nums:
-            danmu_cache = danmu_cache[:_max_nums]
-        logger.info(f"按最多保留{_max_nums}条弹幕过滤后当前danmu_cache互动弹幕数量：{len(danmu_cache)}")
+        if len(danmu_cache) > self.danmu_max_nums:
+            danmu_cache = danmu_cache[:self.danmu_max_nums]
+        logger.info(f"按最多保留{self.danmu_max_nums}条弹幕过滤后当前danmu_cache互动弹幕数量：{len(danmu_cache)}")
 
         return danmu_cache
 
@@ -198,8 +204,7 @@ class DanmuService:
         # 如果LLM正在生成live_danmu文本，或互动队列有元素，则认为上一次live_danmu还未执行完
         return [is_danmu_llm_generating, has_interact_queue_items]
 
-    @staticmethod
-    async def process_danmu(danmu_list) -> list:
+    async def process_danmu(self, danmu_list) -> list:
         """
         处理弹幕等级分类
         Args:
@@ -214,7 +219,7 @@ class DanmuService:
             # 批量识别问题类型弹幕的等级
             question_contents = [danmu.content for danmu in question_danmus]
             # 调用DanmuService的identify_levels方法
-            levels = await DanmuService.identify_levels(question_contents)
+            levels = await self.identify_levels(question_contents)
 
             # 为问题类型弹幕添加等级
             for i, _danmu in enumerate(question_danmus):
@@ -284,8 +289,7 @@ class DanmuService:
 
         return level, cleaned_text
 
-    @staticmethod
-    async def handle_danmu_queues(max_level, danmu_cache, llm, tts):
+    async def handle_danmu_queues(self, max_level, danmu_cache, llm, tts):
         """
         根据弹幕等级处理TTS队列
 
@@ -348,7 +352,7 @@ class DanmuService:
         # 处理弹幕
         async for sentence in llm.handle_interact(danmu_cache):
             full_answer += sentence
-            if config["tts"]["enabled"]:
+            if self.tts_enabled:
                 # 解析句子等级
                 level, sentence = DanmuService.extract_level_and_sentence(sentence)
 

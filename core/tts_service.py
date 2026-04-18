@@ -182,13 +182,22 @@ class TTSStreamCallback(ResultCallback):
 class TTSLiveService:
     """TTS实时服务类，负责管理流式语音合成和播放"""
 
-    def __init__(self, session_id: str):
+    def __init__(self, session_id: str, room_config: dict = None):
         """初始化TTS服务
 
         Args:
             session_id: 会话ID，用于日志跟踪
+            room_config: 直播间配置，用于覆盖 TTS 参数
         """
+        rc = room_config or {}
         self.session_id = session_id
+        tts_enabled = rc.get("ttsEnabled")
+        self.tts_enabled     = tts_enabled if tts_enabled is not None else config["tts"]["enabled"]
+        self.tts_model_name  = rc.get("ttsModelName")  or config["tts"]["model_name"]
+        self.tts_voice_id    = rc.get("ttsVoiceId")    or config["tts"]["voice_id"]
+        self.tts_speech_rate = float(rc.get("ttsSpeechRate") or config["tts"]["speech_rate"])
+        self.tts_pitch_rate  = float(rc.get("ttsPitchRate")  or config["tts"]["pitch_rate"])
+        self.tts_instruction = rc.get("ttsInstruction") or TTS_INSTRUCTION
         self.callback = TTSStreamCallback(self)
         self.synthesizer = None
         # 以下是互动弹幕队列
@@ -208,13 +217,13 @@ class TTSLiveService:
         try:
             self.callback = TTSStreamCallback(self)
             self.synthesizer = SpeechSynthesizer(
-                model=config["tts"]["model_name"],
-                voice=config["tts"]["voice_id"],
-                format=AudioFormat.PCM_22050HZ_MONO_16BIT,  # 流式调用推荐格式
-                speech_rate=config["tts"]["speech_rate"],
-                pitch_rate=config["tts"]["pitch_rate"],
+                model=self.tts_model_name,
+                voice=self.tts_voice_id,
+                format=AudioFormat.PCM_22050HZ_MONO_16BIT,
+                speech_rate=self.tts_speech_rate,
+                pitch_rate=self.tts_pitch_rate,
                 callback=self.callback,
-                instruction=TTS_INSTRUCTION
+                instruction=self.tts_instruction
             )
             logger.info(f"会话{self.session_id}TTS synthesizer初始化成功")
         except Exception as e:

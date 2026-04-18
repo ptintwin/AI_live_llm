@@ -14,7 +14,7 @@ from botocore.hooks import first_non_none_response
 # from dashscope import Generation
 from dashscope.aigc.generation import AioGeneration
 from yaml import safe_load
-from config.prompts import SYSTEM_PROMPT, CURRENT_LIVE_ROOM_PROMPT, CONTINUE_PROMPT, INTERACT_PROMPT
+from config.prompts import SYSTEM_PROMPT, CURRENT_LIVE_ROOM_PROMPT, CONTINUE_PROMPT, INTERACT_PROMPT, DANMU_LEVEL_PROMPT
 from utils.logger import logger
 
 # 加载配置
@@ -29,33 +29,46 @@ if not dashscope.api_key:
 class LLMLiveService:
     """LLM实时服务类，负责管理流式文本生成和互动响应"""
 
-    def __init__(self, session_id: str, background: str = None):
+    def __init__(self, session_id: str, room_config: dict = None):
         """初始化LLM服务
 
         Args:
             session_id: 会话ID，用于日志跟踪
-            background: 背景信息，用于系统提示
+            room_config: 直播间 LLM 配置（来自数据库），缺省时回退到 config.yaml 和 prompts.py 默认值
         """
-        self.history = []
+        rc = room_config or {}
         self.session_id = session_id
-        self.background = background if background else CURRENT_LIVE_ROOM_PROMPT
-        self.max_history = config["llm"]["max_history"]
-        self.loop_interrupt_flag = False  # 控制live_loop中断或继续的标志
+        self.history = []
+        self.loop_interrupt_flag = False
         self.generation_type = None
-        self.cycle_count = 0  # 循环次数
-        self.user_focus_cycle = 0  # 循环生成中已"关注近期观众弹幕交互"的循环次数
+        self.cycle_count = 0
+        self.user_focus_cycle = 0
+
+        # 运行时参数：房间配置优先，回退 config.yaml
+        self.model_name = rc.get("modelName") or config["llm"]["model_name"]
+        self.temperature = float(rc.get("temperature") or config["llm"]["temperature"])
+        self.max_history = int(rc.get("maxHistory") or config["llm"]["max_history"])
+        self.max_cycle_focus = int(rc.get("maxCycleFocus") or config["live"]["max_cycle_focus"])
+
+        # Prompt 模板：房间配置优先，回退 prompts.py 默认值
+        system_prompt    = rc.get("systemPrompt")    or SYSTEM_PROMPT
+        live_background  = rc.get("liveBackground")  or CURRENT_LIVE_ROOM_PROMPT
+        self.continue_prompt     = rc.get("continuePrompt")    or CONTINUE_PROMPT
+        self.interact_prompt     = rc.get("interactPrompt")    or INTERACT_PROMPT
+        self.danmu_level_prompt  = rc.get("danmuLevelPrompt")  or DANMU_LEVEL_PROMPT
+
         self.fixed_prefix_history = [
             {
                 "role": "system",
                 "content": [
                     {
                         "type": "text",
-                        "text": SYSTEM_PROMPT,
+                        "text": system_prompt,
                         "cache_control": {"type": "ephemeral"}
                     },
                     {
                         "type": "text",
-                        "text": f"【当前直播间背景信息】{self.background}"
+                        "text": f"【当前直播间背景信息】{live_background}"
                     }
                 ]
             }
@@ -113,15 +126,15 @@ class LLMLiveService:
         chunk_count = 0  # 手动计数，替代 enumerate
         try:
             # 调用通义千问（流式+临时缓存+增量输出）
-            logger.info(f"开始调用LLM：模型={config['llm']['model_name']}，消息长度={len(messages)}")
+            logger.info(f"开始调用LLM：模型={self.model_name}，消息长度={len(messages)}")
             logger.info(f"self.history: {self.history}")
             responses = await AioGeneration.call(
-                model=config["llm"]["model_name"],
+                model=self.model_name,
                 messages=messages,
-                result_format="message",  # 消息格式输出
+                result_format="message",
                 stream=True,
-                incremental_output=True,  # 关键：设置为True以获取增量输出，性能更佳
-                temperature=config["llm"]["temperature"]
+                incremental_output=True,
+                temperature=self.temperature
             )
             logger.info("LLM调用成功，开始接收流式响应")
 
@@ -218,12 +231,12 @@ class LLMLiveService:
         self.cycle_count += 1
         # 构建续讲Prompt
         prompt = ""
-        max_focus_cycle = config["live"]["max_cycle_focus"]
+        max_focus_cycle = self.max_cycle_focus
         if self.user_focus_cycle > max_focus_cycle:
             # 超过了最大“照顾观众交互”轮次，置为0表示不再“照顾交互”
             self.user_focus_cycle = 0
         if self.cycle_count > 1:
-            prompt = CONTINUE_PROMPT
+            prompt = self.continue_prompt
             if self.user_focus_cycle > 0:
                 # 计算照顾度：值越小表示越近期，照顾度越高
                 focus_level = max_focus_cycle - self.user_focus_cycle + 1
@@ -258,7 +271,7 @@ class LLMLiveService:
             suffix_pmt = f"观众‘{username}’：{content}\n" if danmu_type == 'question' else f"观众‘{username}’{content}\n"
             danmu_summary += (prefix_map[danmu_type] + suffix_pmt)
 
-        prompt = INTERACT_PROMPT.format(danmu_summary=danmu_summary)
+        prompt = self.interact_prompt.format(danmu_summary=danmu_summary)
         async for chunk in self._stream_llm_response(prompt, True, danmu_summary=danmu_summary):
             yield chunk
         self.user_focus_cycle = 1

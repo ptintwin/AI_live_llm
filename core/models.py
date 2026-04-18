@@ -15,8 +15,8 @@ class DanmuItem(BaseModel):
 
 
 class StartStreamRequest(BaseModel):
-    room_id: str = Field(..., description="直播间ID")
-    background: str = Field("", description="当前直播间专属系统提示词")
+    room_id: str = Field(..., description="直播间ID（数据库内部ID）")
+    session_id: str = Field(..., description="开播会话ID（由 Spring Boot 生成的 UUID）")
 
 
 class LiveDanmuRequest(BaseModel):

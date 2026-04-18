@@ -42,3 +42,7 @@ server:
   host: "0.0.0.0"
   port: 8000
   log_level: "info"
+
+# Spring Boot 后端地址（Python 开播时调用此地址读取直播间 LLM 配置）
+spring_boot:
+  base_url: "http://localhost:8080"

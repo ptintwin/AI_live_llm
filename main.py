@@ -4,11 +4,11 @@
 核心接口：start_stream / send_question / stop_session / health_check / shutdown
 """
 import asyncio
-import uuid
 import os
-import re
 import traceback
+import uuid
 from datetime import datetime
+import httpx
 from fastapi import FastAPI, BackgroundTasks
 import uvicorn
 from yaml import safe_load
@@ -31,6 +31,18 @@ app = FastAPI(title="抖音游戏主播直播互动系统", version="1.0")
 # 全局会话管理（session_id: {llm, tts task, danmu_lock, danmu_task}）
 SESSIONS = {}
 
+SPRING_BASE_URL = config["spring_boot"]["base_url"]
+
+
+async def fetch_room_llm_config(room_id: str) -> dict:
+    """从 Spring Boot 后端读取直播间 LLM 配置"""
+    url = f"{SPRING_BASE_URL}/api/rooms/{room_id}/llm-config"
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        resp = await client.get(url)
+        resp.raise_for_status()
+        data = resp.json()
+        return data.get("data") or {}
+
 
 # ------------------- 核心接口 -------------------
 @app.get("/health_check", summary="服务健康检查")
@@ -40,24 +52,29 @@ async def health_check():
 
 @app.post("/start_stream", summary="开启流式直播讲解")
 async def start_stream(req: StartStreamRequest, background_tasks: BackgroundTasks):
-    # 生成唯一会话ID
-    session_id = str(uuid.uuid4())
+    session_id = req.session_id
     logger.info(f"创建新会话：{session_id}，直播间：{req.room_id}")
 
-    # 初始化核心服务
-    llm_service = LLMLiveService(session_id, req.background)
-    tts_service = TTSLiveService(session_id)
+    # 从数据库读取直播间 LLM 配置
+    try:
+        room_config = await fetch_room_llm_config(req.room_id)
+        logger.info(f"会话{session_id}成功读取直播间{req.room_id}的LLM配置")
+    except Exception as e:
+        logger.warning(f"会话{session_id}读取LLM配置失败，使用默认值：{e}")
+        room_config = {}
+
+    # 初始化核心服务（使用直播间专属配置）
+    llm_service = LLMLiveService(session_id, room_config)
+    tts_service = TTSLiveService(session_id, room_config)
 
     # 后台任务：循环生成讲解+播放
     async def live_loop():
         try:
             # 启动TTS消费者任务
-            if config["tts"]["enabled"]:
+            if tts_service.tts_enabled:
                 await tts_service.start_consumer()
-                # 等待TTS服务完全启动
                 await asyncio.sleep(1.0)
 
-            # 标记是否正在生成文本
             while session_id in SESSIONS:
                 if llm_service.loop_interrupt_flag:
                     if llm_service.generation_type != "live_danmu" and tts_service.is_prepare_loop():
@@ -67,8 +84,7 @@ async def start_stream(req: StartStreamRequest, background_tasks: BackgroundTask
                         await asyncio.sleep(0.2)
                         continue
 
-                # 检查循环播报队列大小，如果小于等于3且不在生成中，开始下一轮生成
-                if config["tts"]["enabled"] and tts_service.get_loop_queue_size() <= 3:
+                if tts_service.tts_enabled and tts_service.get_loop_queue_size() <= 3:
                     # 流式生成段落并添加到队列（异步非阻塞）
                     logger.info(f"会话{session_id}开始第 {llm_service.cycle_count + 1} 轮循环讲解")
                     # 实时流式生成句子并添加到队列
@@ -80,7 +96,7 @@ async def start_stream(req: StartStreamRequest, background_tasks: BackgroundTask
                             logger.info(f"会话{session_id}检测到中断标志，停止当前轮次讲解")
                             break
                         # 添加到循环播报队列
-                        if config["tts"]["enabled"]:
+                        if tts_service.tts_enabled:
                             tts_service.add_to_loop_queue(sentence, llm_service.cycle_count)
                         else:
                             # 非TTS模式下直接显示
@@ -96,9 +112,10 @@ async def start_stream(req: StartStreamRequest, background_tasks: BackgroundTask
             await stop_session(StopSessionRequest(session_id=session_id))
 
     # 弹幕处理循环
+    danmu_service = DanmuService(room_config)
+
     async def danmu_processing_loop():
         try:
-            danmu_service = DanmuService()
             while session_id in SESSIONS:
                 # 检查danmu_cache是否有内容
                 async with SESSIONS[session_id]["danmu_lock"]:
@@ -132,6 +149,7 @@ async def start_stream(req: StartStreamRequest, background_tasks: BackgroundTask
     SESSIONS[session_id] = {
         "llm": llm_service,
         "tts": tts_service,
+        "danmu_service": danmu_service,
         "room_id": req.room_id,
         "danmu_cache": [],
         "danmu_lock": asyncio.Lock(),
@@ -156,8 +174,8 @@ async def live_danmu(req: LiveDanmuRequest, background_tasks: BackgroundTasks):
         # 后台任务处理弹幕等级识别和缓存更新
         async def process_danmu_background():
             try:
-                # 处理弹幕
-                processed_danmu_list = await DanmuService.process_danmu(req.danmu_list)
+                # 处理弹幕（使用会话绑定的 danmu_service 实例）
+                processed_danmu_list = await session["danmu_service"].process_danmu(req.danmu_list)
                 logger.info(f"处理弹幕等级分类完成，处理后弹幕数量: {len(processed_danmu_list)}")
 
                 # 更新弹幕缓存
