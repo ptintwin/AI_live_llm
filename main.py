@@ -8,7 +8,6 @@ import os
 import traceback
 import uuid
 from datetime import datetime
-import httpx
 from fastapi import FastAPI, BackgroundTasks
 import uvicorn
 from yaml import safe_load
@@ -20,6 +19,15 @@ from audio_design.voice_clone import create_voice, poll_voice_status
 from dashscope.audio.tts_v2 import SpeechSynthesizer, AudioFormat
 from utils.logger import logger
 from utils.oss_utils import upload_to_oss
+from utils.dashscope_runtime import (
+    apply_dashscope_from_room_config,
+    merge_global_llm_into_room_config,
+    redact_room_config_for_log,
+)
+from utils.spring_llm_config import (
+    fetch_global_llm_settings,
+    resolve_room_llm_config,
+)
 
 # 加载服务配置
 with open("./config/config.yaml", "r", encoding="utf-8") as f:
@@ -30,26 +38,11 @@ app = FastAPI(title="抖音游戏主播直播互动系统", version="1.0")
 
 # 全局会话管理（session_id: {llm, tts task, danmu_lock, danmu_task}）
 SESSIONS = {}
-SPRING_BASE_URL = config["spring_boot"]["base_url"]
 
 # ------------------- 核心接口 -------------------
 @app.get("/health_check", summary="服务健康检查")
 async def health_check():
     return {"status": "ok", "sessions_count": len(SESSIONS)}
-
-
-async def fetch_room_llm_config(room_id: str) -> dict:
-    """从 Spring Boot 后端读取直播间 LLM 配置"""
-    url = f"{SPRING_BASE_URL}/api/rooms/{room_id}/llm-config"
-    try:
-        async with httpx.AsyncClient(timeout=5.0) as client:
-            resp = await client.get(url)
-            resp.raise_for_status()
-            data = resp.json()
-            return data.get("data") or {}
-    except Exception as e:
-        logger.warning(f"基于Spring Boot后端接口获取配置失败，改为读取本地默认配置：{e}")
-        return {}
 
 
 @app.post("/start_stream", summary="开启流式直播讲解")
@@ -61,12 +54,13 @@ async def start_stream(req: StartStreamRequest, background_tasks: BackgroundTask
         session_id = req.session_id
         logger.info(f"获取到前端传入session_id：{session_id}，直播间id：{req.room_id}")
 
-    # 从数据库读取直播间 LLM 配置
-    room_config = await fetch_room_llm_config(req.room_id)
+    # 从 Spring 合并直播间与系统设置（含 DashScope API Key）
+    room_config = await resolve_room_llm_config(req.room_id)
+    apply_dashscope_from_room_config(room_config)
     if room_config:
-        logger.info(f"room_config: {room_config}")
+        logger.info(f"room_config（脱敏）: {redact_room_config_for_log(room_config)}")
     else:
-        logger.warning(f"改为读取本地默认配置")
+        logger.warning("未获取到远端配置，将使用本地 config.yaml / prompts；DashScope 凭据依赖环境变量 DASHSCOPE_API_KEY")
     # 初始化核心服务（使用直播间专属配置）
     llm_service = LLMLiveService(session_id, room_config)
     tts_service = TTSLiveService(session_id, room_config)
@@ -187,7 +181,7 @@ async def live_danmu(req: LiveDanmuRequest, background_tasks: BackgroundTasks):
 
                 logger.info(f"弹幕处理完成，已缓存 {updated_cache_size} 条弹幕")
             except Exception as e:
-                logger.error(f"会话{req.session_id}后台处理弹幕互动异常：{traceback.print_exc()}")
+                logger.error(f"会话{req.session_id}后台处理弹幕互动异常：{traceback.format_exc()}")
 
         # 添加后台任务
         background_tasks.add_task(process_danmu_background)
@@ -195,7 +189,7 @@ async def live_danmu(req: LiveDanmuRequest, background_tasks: BackgroundTasks):
         # 立即返回，不等待处理完成
         return {"session_id": req.session_id, "status": "processing", "message": "弹幕处理已开始"}
     except Exception as e:
-        logger.error(f"会话{req.session_id}处理弹幕互动异常：{traceback.print_exc()}")
+        logger.error(f"会话{req.session_id}处理弹幕互动异常：{traceback.format_exc()}")
         return {"error": str(e)}
 
 
@@ -247,19 +241,20 @@ async def update_config(req: UpdateConfigRequest):
         return {"error": "会话不存在"}
 
     try:
-        # 重新获取配置
-        room_config = await fetch_room_llm_config(req.room_id)
-        if not room_config:
-            return {"session_id": req.session_id, "status": "failed"}
+        room_config = await resolve_room_llm_config(req.room_id)
+        apply_dashscope_from_room_config(room_config)
 
-        # 更新各服务实例的配置
-        logger.info(f"为会话{req.session_id}更新配置: {room_config}")
+        logger.info(f"为会话{req.session_id}更新配置（脱敏）: {redact_room_config_for_log(room_config)}")
         session["llm"].update_config(room_config)
         session["tts"].update_config(room_config)
         session["danmu_service"].update_config(room_config)
 
         logger.info(f"会话{req.session_id}配置更新成功")
-        return {"session_id": req.session_id, "status": "success", "config": room_config}
+        return {
+            "session_id": req.session_id,
+            "status": "success",
+            "config": redact_room_config_for_log(room_config),
+        }
     except Exception as e:
         logger.error(f"更新配置失败: {e}")
         return {"error": str(e), "status": "failed"}
@@ -285,6 +280,9 @@ async def voice_clone(req: VoiceCloneRequest):
     try:
         logger.info(f"开始语音克隆，音频URL: {req.audio_url}")
 
+        g = await fetch_global_llm_settings()
+        apply_dashscope_from_room_config(merge_global_llm_into_room_config({}, g))
+
         # 调用语音克隆功能
         voice_id = create_voice(config["tts"]["model_name"], "myvoice", req.audio_url)
         logger.info(f"语音克隆请求提交成功，voice_id: {voice_id}")
@@ -308,6 +306,9 @@ async def tts_synthesis(req: TTSRequest):
     """
     try:
         logger.info(f"开始语音合成，voice_id: {req.voice_id}")
+
+        g = await fetch_global_llm_settings()
+        apply_dashscope_from_room_config(merge_global_llm_into_room_config({}, g))
 
         if not req.text:
             req.text = "恭喜，已成功复刻并合成了属于自己的声音，你觉得听起来怎么样？"

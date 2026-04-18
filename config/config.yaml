@@ -1,6 +1,6 @@
-# 阿里云百炼配置
+# 阿里云百炼配置（api_key 以系统设置 / 直播间合并配置为准，可选环境变量 DASHSCOPE_API_KEY 兜底）
 dashscope:
-  api_key: "配置并读取环境变量DASHSCOPE_API_KEY"
+  api_key: ""
   region: "cn-beijing"
 
 # 文本大模型配置
@@ -40,7 +40,7 @@ oss:
 # 服务配置
 server:
   host: "0.0.0.0"
-  port: 8000
+  port: 9080
   log_level: "info"
 
 # Spring Boot 后端地址（Python 开播时调用此地址读取直播间 LLM 配置）

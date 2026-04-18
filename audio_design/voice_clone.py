@@ -6,16 +6,7 @@ import pyaudio
 import contextlib
 from dashscope.audio.tts_v2 import VoiceEnrollmentService, SpeechSynthesizer, ResultCallback, AudioFormat
 
-# ===================== 环境配置 =====================
-dashscope.api_key = os.getenv("DASHSCOPE_API_KEY")
-if not dashscope.api_key:
-    raise ValueError("DASHSCOPE_API_KEY环境变量未设置")
-
-# 地域配置（北京地域），新加坡地域需替换对应URL
-dashscope.base_websocket_api_url = 'wss://dashscope.aliyuncs.com/api-ws/v1/inference'
-dashscope.base_http_api_url = 'https://dashscope.aliyuncs.com/api/v1'
-
-# 全局配置
+# 全局配置（DashScope 凭据由 main 在调用前通过 utils.dashscope_runtime 设置）
 TARGET_MODEL = "cosyvoice-v3.5-flash"
 VOICE_PREFIX = "myvoice"  # 仅允许数字和小写字母，小于十个字符
 AUDIO_URL = """https://lucastao.oss-cn-beijing.aliyuncs.com/voice-recorder-2026-03-21--06-34-45.wav?Expires=1774711953&OSSAccessKeyId=TMP.3Kz9xSgVH29HrtfYqR1oJH23C5T2ZvBNSEA2dYB8i7tNkeSyZBpHT1KBrXtH5eTpAbxCgu2xno4eSFbYxWweyFSVZcAoAG&Signature=i3intE1%2F8uzrbAMbXVpNCEIHmvE%3D"""

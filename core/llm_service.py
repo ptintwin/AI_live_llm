@@ -3,14 +3,11 @@
 通义千问流式文本生成服务
 满足：临时缓存、历史记录限制、段落流式生成、自然中断、循环续讲
 """
-import os
 import re
 import asyncio
 import time
 from http import HTTPStatus
 from typing import AsyncGenerator, Any
-import dashscope
-from botocore.hooks import first_non_none_response
 # from dashscope import Generation
 from dashscope.aigc.generation import AioGeneration
 from yaml import safe_load
@@ -20,10 +17,6 @@ from utils.logger import logger
 # 加载配置
 with open("./config/config.yaml", "r", encoding="utf-8") as f:
     config = safe_load(f)
-
-dashscope.api_key = os.getenv("DASHSCOPE_API_KEY")
-if not dashscope.api_key:
-    raise ValueError("DASHSCOPE_API_KEY环境变量未设置")
 
 
 class LLMLiveService:

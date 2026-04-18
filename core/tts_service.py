@@ -7,7 +7,6 @@ import os
 import time
 import asyncio
 import traceback
-import dashscope
 from dashscope.audio.tts_v2 import SpeechSynthesizer, AudioFormat, ResultCallback
 from yaml import safe_load
 from collections import deque
@@ -18,14 +17,6 @@ from utils.logger import logger
 # 加载配置
 with open("./config/config.yaml", "r", encoding="utf-8") as f:
     config = safe_load(f)
-
-dashscope.api_key = os.getenv("DASHSCOPE_API_KEY")
-if not dashscope.api_key:
-    raise ValueError("DASHSCOPE_API_KEY环境变量未设置")
-
-# 地域配置（北京地域），新加坡地域需替换对应URL
-dashscope.base_websocket_api_url = 'wss://dashscope.aliyuncs.com/api-ws/v1/inference'
-dashscope.base_http_api_url = 'https://dashscope.aliyuncs.com/api/v1'
 
 
 class TTSStreamCallback(ResultCallback):
