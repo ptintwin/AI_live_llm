@@ -191,7 +191,7 @@ class TTSLiveService:
         self.tts_model_name = rc.get("ttsModelName") or config["tts"]["model_name"]
         self.tts_profiles = rc.get("ttsProfiles") or []
         first = self.tts_profiles[0] if self.tts_profiles else {}
-        self.tts_voice_id = first.get("voiceId") or rc.get("ttsVoiceId") or config["tts"]["voice_id"]
+        self.tts_voice_id = first.get("voiceId") or config["tts"]["voice_id"]
         self.tts_speech_rate = float(first.get("speechRate") or config["tts"]["speech_rate"])
         self.tts_pitch_rate = float(first.get("pitchRate") or config["tts"]["pitch_rate"])
         self.tts_instruction = rc.get("ttsInstruction") or TTS_INSTRUCTION
@@ -513,7 +513,7 @@ class TTSLiveService:
         self.tts_model_name = rc.get("ttsModelName") or config["tts"]["model_name"]
         self.tts_profiles = rc.get("ttsProfiles") or []
         first = self.tts_profiles[0] if self.tts_profiles else {}
-        self.tts_voice_id = first.get("voiceId") or rc.get("ttsVoiceId") or config["tts"]["voice_id"]
+        self.tts_voice_id = first.get("voiceId") or config["tts"]["voice_id"]
         self.tts_speech_rate = float(first.get("speechRate") or config["tts"]["speech_rate"])
         self.tts_pitch_rate = float(first.get("pitchRate") or config["tts"]["pitch_rate"])
         self.tts_instruction = rc.get("ttsInstruction") or TTS_INSTRUCTION

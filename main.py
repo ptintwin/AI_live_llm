@@ -250,7 +250,7 @@ async def update_config(req: UpdateConfigRequest):
         room_config = await resolve_room_llm_config(req.room_id)
         apply_dashscope_from_room_config(room_config)
 
-        logger.info(f"为会话{req.session_id}更新配置（脱敏）: {redact_room_config_for_log(room_config)}")
+        logger.info(f"为会话{req.session_id}更新配置（脱敏）: {json.dumps(redact_room_config_for_log(room_config), indent=4, ensure_ascii=False)}")
         session["llm"].update_config(room_config)
         session["tts"].update_config(room_config)
         session["danmu_service"].update_config(room_config)

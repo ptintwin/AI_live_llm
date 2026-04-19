@@ -305,12 +305,12 @@ class LLMLiveService:
                 "content": [
                     {
                         "type": "text",
-                        "text": system_prompt,
-                        "cache_control": {"type": "ephemeral"}
+                        "text": system_prompt
                     },
                     {
                         "type": "text",
-                        "text": f"【当前直播间背景信息】{live_background}"
+                        "text": f"【当前直播间背景信息】{live_background}",
+                        "cache_control": {"type": "ephemeral"}
                     }
                 ]
             }
