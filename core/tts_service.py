@@ -291,7 +291,7 @@ class TTSLiveService:
                 self.synthesizer.streaming_call(sentence)
                 await asyncio.sleep(0.1)
                 try:
-                    await asyncio.wait_for(self.callback.play_completed.wait(), timeout=20.0)
+                    await asyncio.wait_for(self.callback.play_completed.wait(), timeout=15.0)
                     self.callback.play_completed.clear()
                 except asyncio.TimeoutError:
                     logger.warning(f"文本播放超时: {sentence[:20]}...")
@@ -308,7 +308,7 @@ class TTSLiveService:
                     self.synthesizer.streaming_call(sentence)
                     await asyncio.sleep(0.1)
                     try:
-                        await asyncio.wait_for(self.callback.play_completed.wait(), timeout=20.0)
+                        await asyncio.wait_for(self.callback.play_completed.wait(), timeout=15.0)
                         logger.info("重新启动后文本播放完成")
                     except asyncio.TimeoutError:
                         logger.warning("重新启动后文本播放超时")
@@ -511,7 +511,7 @@ class TTSLiveService:
                 logger.info("当前正在TTS播报，等待播报完成后再更新配置")
                 # 等待当前播报完成
                 try:
-                    await asyncio.wait_for(self.callback.play_completed.wait(), timeout=30.0)
+                    await asyncio.wait_for(self.callback.play_completed.wait(), timeout=15.0)
                 except asyncio.TimeoutError:
                     logger.warning("等待播报完成超时，强制更新配置")
 
@@ -543,7 +543,7 @@ class TTSLiveService:
         async def do_switch():
             if self.callback and self.callback.playing:
                 try:
-                    await asyncio.wait_for(self.callback.play_completed.wait(), timeout=30.0)
+                    await asyncio.wait_for(self.callback.play_completed.wait(), timeout=15.0)
                 except asyncio.TimeoutError:
                     logger.warning("等待播报完成超时，强制切换音色")
             if self.synthesizer:

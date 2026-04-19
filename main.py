@@ -4,6 +4,7 @@
 核心接口：start_stream / send_question / stop_session / health_check / shutdown
 """
 import asyncio
+import json
 import os
 import traceback
 import uuid
@@ -58,7 +59,7 @@ async def start_stream(req: StartStreamRequest, background_tasks: BackgroundTask
     room_config = await resolve_room_llm_config(req.room_id)
     apply_dashscope_from_room_config(room_config)
     if room_config:
-        logger.info(f"room_config（脱敏）: {redact_room_config_for_log(room_config)}")
+        logger.info(f"room_config（脱敏）: {json.dumps(redact_room_config_for_log(room_config), indent=4, ensure_ascii=False)}")
     else:
         logger.warning("未获取到远端配置，将使用本地 config.yaml / prompts；DashScope 凭据依赖环境变量 DASHSCOPE_API_KEY")
     # 初始化核心服务（使用直播间专属配置）
@@ -198,7 +199,12 @@ async def switch_voice_role(req: SwitchVoiceRoleRequest):
     session = SESSIONS.get(req.session_id)
     if not session:
         return {"error": "会话不存在"}
-    session["tts"].switch_voice(req.voice_id)
+    try:
+        logger.info(f"会话: {req.session_id}开始执行音色切换，切换voice_id：{req.voice_id}")
+        session["tts"].switch_voice(req.voice_id)
+        logger.info(f"会话: {req.session_id}完成voice_id={req.voice_id}的音色切换")
+    except Exception as e:
+        logger.error(f"音色切换接口执行异常，error：{traceback.print_exc()}")
     return {"session_id": req.session_id, "status": "switch success!"}
 
 

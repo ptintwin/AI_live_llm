@@ -4,8 +4,15 @@ import requests
 import os
 import asyncio
 import datetime
+from yaml import safe_load
 
-BASE_URL = "http://127.0.0.1:8000"
+# 加载配置
+config_path = os.path.join(os.path.dirname(__file__), "..", "config", "config.yaml")
+with open(config_path, "r", encoding="utf-8") as f:
+    config = safe_load(f)
+
+# 构建BASE_URL
+BASE_URL = f"http://{config['server']['host']}:{config['server']['port']}"
 SESSION_FILE = os.path.join(os.path.dirname(__file__), "session_id.txt")
 
 
