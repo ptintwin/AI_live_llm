@@ -182,12 +182,13 @@ class TTSLiveService:
         """
         rc = room_config or {}
         self.session_id = session_id
-        tts_enabled = rc.get("ttsEnabled")
-        self.tts_enabled = tts_enabled if tts_enabled is not None else config["tts"]["enabled"]
+        self.tts_enabled = True
         self.tts_model_name = rc.get("ttsModelName") or config["tts"]["model_name"]
-        self.tts_voice_id = rc.get("ttsVoiceId") or config["tts"]["voice_id"]
-        self.tts_speech_rate = float(rc.get("ttsSpeechRate") or config["tts"]["speech_rate"])
-        self.tts_pitch_rate = float(rc.get("ttsPitchRate") or config["tts"]["pitch_rate"])
+        self.tts_profiles = rc.get("ttsProfiles") or []
+        first = self.tts_profiles[0] if self.tts_profiles else {}
+        self.tts_voice_id = first.get("voiceId") or rc.get("ttsVoiceId") or config["tts"]["voice_id"]
+        self.tts_speech_rate = float(first.get("speechRate") or config["tts"]["speech_rate"])
+        self.tts_pitch_rate = float(first.get("pitchRate") or config["tts"]["pitch_rate"])
         self.tts_instruction = rc.get("ttsInstruction") or TTS_INSTRUCTION
         self.callback = TTSStreamCallback(self)
         self.synthesizer = None
@@ -494,13 +495,13 @@ class TTSLiveService:
             room_config: 新的直播间配置
         """
         rc = room_config or {}
-        # 更新TTS配置
-        tts_enabled = rc.get("ttsEnabled")
-        self.tts_enabled = tts_enabled if tts_enabled is not None else config["tts"]["enabled"]
+        self.tts_enabled = True
         self.tts_model_name = rc.get("ttsModelName") or config["tts"]["model_name"]
-        self.tts_voice_id = rc.get("ttsVoiceId") or config["tts"]["voice_id"]
-        self.tts_speech_rate = float(rc.get("ttsSpeechRate") or config["tts"]["speech_rate"])
-        self.tts_pitch_rate = float(rc.get("ttsPitchRate") or config["tts"]["pitch_rate"])
+        self.tts_profiles = rc.get("ttsProfiles") or []
+        first = self.tts_profiles[0] if self.tts_profiles else {}
+        self.tts_voice_id = first.get("voiceId") or rc.get("ttsVoiceId") or config["tts"]["voice_id"]
+        self.tts_speech_rate = float(first.get("speechRate") or config["tts"]["speech_rate"])
+        self.tts_pitch_rate = float(first.get("pitchRate") or config["tts"]["pitch_rate"])
         self.tts_instruction = rc.get("ttsInstruction") or TTS_INSTRUCTION
 
         # 重新初始化synthesizer以应用新配置，但要确保当前播报完成
@@ -527,3 +528,27 @@ class TTSLiveService:
 
         # 异步执行更新
         asyncio.create_task(update_synthesizer())
+
+    def switch_voice(self, voice_id: str):
+        """切换到指定音色，并应用该音色的 speechRate/pitchRate"""
+        profile = next(
+            (p for p in self.tts_profiles if p.get("voiceId") == voice_id),
+            None
+        )
+        self.tts_voice_id = voice_id
+        if profile:
+            self.tts_speech_rate = float(profile.get("speechRate") or config["tts"]["speech_rate"])
+            self.tts_pitch_rate = float(profile.get("pitchRate") or config["tts"]["pitch_rate"])
+
+        async def do_switch():
+            if self.callback and self.callback.playing:
+                try:
+                    await asyncio.wait_for(self.callback.play_completed.wait(), timeout=30.0)
+                except asyncio.TimeoutError:
+                    logger.warning("等待播报完成超时，强制切换音色")
+            if self.synthesizer:
+                self._close_synthesizer()
+            await self.start_streaming()
+            logger.info(f"会话{self.session_id}已切换音色到 {voice_id}")
+
+        asyncio.create_task(do_switch())

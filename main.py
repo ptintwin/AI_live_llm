@@ -198,7 +198,7 @@ async def switch_voice_role(req: SwitchVoiceRoleRequest):
     session = SESSIONS.get(req.session_id)
     if not session:
         return {"error": "会话不存在"}
-
+    session["tts"].switch_voice(req.voice_id)
     return {"session_id": req.session_id, "status": "switch success!"}
 
 
