@@ -85,9 +85,12 @@ class TTSStreamCallback(ResultCallback):
         logger.error(f"[TTS] on_error: {msg}")
         self.has_error = True
         self.playing = False
+        # 立即清理资源，为重启做准备
         self.close()
+        # 通知 TTSLiveService 重启流式播报
         if self.tts_service:
             logger.info("通知 TTSLiveService 重启流式播报")
+            # 设置完成事件，让 _process_queue 继续处理下一个句子
             self.play_completed.set()
 
     def on_close(self):
@@ -263,15 +266,12 @@ class TTSLiveService:
                 self.synthesizer = None
 
                 est_playback = max(
-                    20.0,
+                    15.0,
                     self.callback.total_bytes_received / _PCM_BYTES_PER_SEC + 10.0,
                 )
                 wait_cap = min(300.0, est_playback)
                 try:
-                    await asyncio.wait_for(
-                        self.callback.play_completed.wait(),
-                        timeout=wait_cap,
-                    )
+                    await asyncio.wait_for(self.callback.play_completed.wait(), timeout=wait_cap)
                     # 检查是否有错误发生
                     if self.callback.has_error:
                         logger.warning("检测到TTS错误，准备重启流式播报")
@@ -296,15 +296,12 @@ class TTSLiveService:
                     )
                     self.synthesizer = None
                     est_playback = max(
-                        20.0,
+                        15.0,
                         self.callback.total_bytes_received / _PCM_BYTES_PER_SEC + 10.0,
                     )
                     wait_cap = min(300.0, est_playback)
                     try:
-                        await asyncio.wait_for(
-                            self.callback.play_completed.wait(),
-                            timeout=wait_cap,
-                        )
+                        await asyncio.wait_for(self.callback.play_completed.wait(), timeout=wait_cap)
                         logger.info("重新启动后文本播放完成")
                     except asyncio.TimeoutError:
                         logger.warning("重新启动后文本播放超时")
