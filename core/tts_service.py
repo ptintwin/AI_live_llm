@@ -95,6 +95,16 @@ class TTSStreamCallback(ResultCallback):
         _delayed_complete 任务，导致 play_completed 永远不触发）"""
         logger.info("[TTS] on_close: 已触发")
 
+    def reset(self):
+        """重置单句合成状态，在每句合成前调用（不替换回调实例，避免引用失效竞态）"""
+        self.play_completed.clear()
+        self.total_bytes_received = 0
+        self.playing = False
+        self.has_error = False
+        if self._complete_future and not self._complete_future.done():
+            self._complete_future.cancel()
+        self._complete_future = None
+
     def close(self):
         """清理回调资源"""
         if self._complete_future and not self._complete_future.done():
@@ -149,18 +159,18 @@ class TTSLiveService:
         self.consumer_task = None
 
     def _init_synthesizer(self):
-        """初始化synthesizer实例"""
-        logger.info(f"会话{self.session_id}初始化TTS synthesizer")
+        """初始化synthesizer实例（复用同一 callback 实例，避免引用失效竞态）"""
+        logger.info(
+            f"会话{self.session_id}初始化TTS synthesizer "
+            f"voice={self.tts_voice_id} rate={self.tts_speech_rate} pitch={self.tts_pitch_rate}"
+        )
         try:
             try:
                 self._main_loop = asyncio.get_running_loop()
             except RuntimeError:
                 pass
-            self.callback = TTSStreamCallback(
-                self,
-                audio_broadcast_fn=self.audio_broadcast_fn,
-                main_loop=self._main_loop,
-            )
+            # 更新 callback 的主事件循环引用（如有变更），但不替换回调实例
+            self.callback._main_loop = self._main_loop
             self.synthesizer = SpeechSynthesizer(
                 model=self.tts_model_name,
                 voice=self.tts_voice_id,
@@ -231,10 +241,8 @@ class TTSLiveService:
                     logger.error(f"启动TTS synthesizer时出错: {e}")
                     continue
 
-            # 重置播放完成事件和字节计数（用于估算播放时长）
-            self.callback.play_completed.clear()
-            self.callback.total_bytes_received = 0
-            self.callback.playing = False
+            # 重置单句合成状态（复用同一 callback 实例）
+            self.callback.reset()
 
             # 流式发送文本；必须 streaming_complete 结束本轮输入，服务端才会 FINISHED → on_complete
             logger.debug(f"发送文本块: {sentence[:20]}...")
@@ -279,9 +287,7 @@ class TTSLiveService:
                 # 尝试重新启动并发送
                 try:
                     await self.start_streaming()
-                    self.callback.play_completed.clear()
-                    self.callback.total_bytes_received = 0
-                    self.callback.playing = False
+                    self.callback.reset()
                     self.synthesizer.streaming_call(sentence)
                     await asyncio.sleep(0.05)
                     await asyncio.to_thread(
@@ -498,30 +504,13 @@ class TTSLiveService:
         self.tts_pitch_rate = float(active.get("pitchRate") or config["tts"]["pitch_rate"])
         self.tts_instruction = rc.get("ttsInstruction") or TTS_INSTRUCTION
 
-        # 重新初始化synthesizer以应用新配置，但要确保当前播报完成
-        async def update_synthesizer():
-            # 检查是否正在播报
-            if self.callback and self.callback.playing:
-                logger.info("当前正在TTS播报，等待播报完成后再更新配置")
-                # 等待当前播报完成
-                try:
-                    await asyncio.wait_for(self.callback.play_completed.wait(), timeout=15.0)
-                except asyncio.TimeoutError:
-                    logger.warning("等待播报完成超时，强制更新配置")
-
-            # 关闭并重新初始化synthesizer
-            if self.synthesizer:
-                self._close_synthesizer()
-                if self.tts_enabled:
-                    await self.start_streaming()
-            elif self.tts_enabled:
-                # 如果之前没有synthesizer但现在启用了TTS
-                await self.start_streaming()
-
-            logger.info(f"TTSLiveService配置已更新")
-
-        # 异步执行更新
-        asyncio.create_task(update_synthesizer())
+        # 配置变量已同步更新；若当前无播报则立即关闭旧会话，下一句重建时自动应用新语速/音色
+        if self.synthesizer and not (self.callback and self.callback.playing):
+            self._close_synthesizer()
+        logger.info(
+            f"TTSLiveService配置已更新（下一句生效）："
+            f"voice={self.tts_voice_id} rate={self.tts_speech_rate} pitch={self.tts_pitch_rate}"
+        )
 
     def switch_voice_by_profile(self, index: int):
         """按 profile 索引切换音色（传输原始 DashScope voice ID，不依赖前端解析）"""
@@ -533,20 +522,13 @@ class TTSLiveService:
         self.tts_voice_id = profile.get("voiceId") or config["tts"]["voice_id"]
         self.tts_speech_rate = float(profile.get("speechRate") or config["tts"]["speech_rate"])
         self.tts_pitch_rate = float(profile.get("pitchRate") or config["tts"]["pitch_rate"])
-        logger.info(f"会话{self.session_id}切换到 profile[{index}]: voice={self.tts_voice_id} rate={self.tts_speech_rate} pitch={self.tts_pitch_rate}")
-
-        async def do_switch():
-            if self.callback and self.callback.playing:
-                try:
-                    await asyncio.wait_for(self.callback.play_completed.wait(), timeout=15.0)
-                except asyncio.TimeoutError:
-                    logger.warning("等待播报完成超时，强制切换音色")
-            if self.synthesizer:
-                self._close_synthesizer()
-            await self.start_streaming()
-            logger.info(f"会话{self.session_id}已完成切换到 profile[{index}]，voice={self.tts_voice_id}")
-
-        asyncio.create_task(do_switch())
+        # 变量已同步更新；若当前无播报则立即关闭旧会话，下一句重建时应用新音色/语速
+        if self.synthesizer and not (self.callback and self.callback.playing):
+            self._close_synthesizer()
+        logger.info(
+            f"会话{self.session_id}切换到 profile[{index}]（下一句生效）："
+            f"voice={self.tts_voice_id} rate={self.tts_speech_rate} pitch={self.tts_pitch_rate}"
+        )
 
     def switch_voice(self, voice_id: str):
         """按 voice_id 切换（兼容旧接口，推荐改用 switch_voice_by_profile）"""
@@ -561,15 +543,6 @@ class TTSLiveService:
             self.tts_speech_rate = float(profile.get("speechRate") or config["tts"]["speech_rate"])
             self.tts_pitch_rate = float(profile.get("pitchRate") or config["tts"]["pitch_rate"])
 
-        async def do_switch():
-            if self.callback and self.callback.playing:
-                try:
-                    await asyncio.wait_for(self.callback.play_completed.wait(), timeout=15.0)
-                except asyncio.TimeoutError:
-                    logger.warning("等待播报完成超时，强制切换音色")
-            if self.synthesizer:
-                self._close_synthesizer()
-            await self.start_streaming()
-            logger.info(f"会话{self.session_id}已切换音色到 {voice_id}")
-
-        asyncio.create_task(do_switch())
+        if self.synthesizer and not (self.callback and self.callback.playing):
+            self._close_synthesizer()
+        logger.info(f"会话{self.session_id}切换音色到 {voice_id}（下一句生效）")
