@@ -150,6 +150,8 @@ class TTSLiveService:
             self, audio_broadcast_fn=audio_broadcast_fn, main_loop=self._main_loop
         )
         self.synthesizer = None
+        # 配置脏标记：update_config / switch_voice* 置 True，_process_queue 在下一句前强制重建 synthesizer
+        self._config_dirty = False
         # 以下是互动弹幕队列
         self.mandatory_queue = asyncio.Queue()  # 必播句队列
         self.important_queue = asyncio.Queue()  # 重要句队列
@@ -234,6 +236,12 @@ class TTSLiveService:
                 # 所有队列都为空，等待新任务
                 await asyncio.sleep(0.1)
                 continue
+
+            # 配置变更脏标记：强制重建 synthesizer，确保下一句使用最新 voice/rate/pitch
+            if self._config_dirty and self.synthesizer is not None:
+                logger.info(f"会话{self.session_id}检测到 TTS 配置脏标记，重建 synthesizer 应用新参数")
+                self._close_synthesizer()
+            self._config_dirty = False
 
             # 每段播完会置空 synthesizer；此处按需新建
             if not self.synthesizer:
@@ -489,6 +497,7 @@ class TTSLiveService:
         Args:
             room_config: 新的直播间配置
         """
+        prev = (self.tts_voice_id, self.tts_speech_rate, self.tts_pitch_rate)
         rc = room_config or {}
         self.tts_enabled = True
         self.tts_model_name = rc.get("ttsModelName") or config["tts"]["model_name"]
@@ -501,12 +510,14 @@ class TTSLiveService:
         self.tts_pitch_rate = float(active.get("pitchRate") or config["tts"]["pitch_rate"])
         self.tts_instruction = rc.get("ttsInstruction") or TTS_INSTRUCTION
 
+        self._config_dirty = True
         # 配置变量已同步更新；若当前无播报则立即关闭旧会话，下一句重建时自动应用新语速/音色
         if self.synthesizer and not (self.callback and self.callback.playing):
             self._close_synthesizer()
         logger.info(
-            f"TTSLiveService配置已更新（下一句生效）："
-            f"voice={self.tts_voice_id} rate={self.tts_speech_rate} pitch={self.tts_pitch_rate}"
+            f"会话{self.session_id} TTS配置已更新（下一句生效）: "
+            f"{prev} -> (voice={self.tts_voice_id}, rate={self.tts_speech_rate}, pitch={self.tts_pitch_rate}) "
+            f"profiles={self.tts_profiles}"
         )
 
     def switch_voice_by_profile(self, index: int):
@@ -514,21 +525,24 @@ class TTSLiveService:
         if index < 0 or index >= len(self.tts_profiles):
             logger.warning(f"会话{self.session_id} switch_voice_by_profile 索引越界: {index}，共 {len(self.tts_profiles)} 个 profile")
             return
+        prev = (self.tts_voice_id, self.tts_speech_rate, self.tts_pitch_rate)
         profile = self.tts_profiles[index]
         self.current_profile_index = index
         self.tts_voice_id = profile.get("voiceId") or config["tts"]["voice_id"]
         self.tts_speech_rate = float(profile.get("speechRate") or config["tts"]["speech_rate"])
         self.tts_pitch_rate = float(profile.get("pitchRate") or config["tts"]["pitch_rate"])
+        self._config_dirty = True
         # 变量已同步更新；若当前无播报则立即关闭旧会话，下一句重建时应用新音色/语速
         if self.synthesizer and not (self.callback and self.callback.playing):
             self._close_synthesizer()
         logger.info(
-            f"会话{self.session_id}切换到 profile[{index}]（下一句生效）："
-            f"voice={self.tts_voice_id} rate={self.tts_speech_rate} pitch={self.tts_pitch_rate}"
+            f"会话{self.session_id}切换到 profile[{index}]（下一句生效）: "
+            f"{prev} -> (voice={self.tts_voice_id}, rate={self.tts_speech_rate}, pitch={self.tts_pitch_rate})"
         )
 
     def switch_voice(self, voice_id: str):
         """按 voice_id 切换（兼容旧接口，推荐改用 switch_voice_by_profile）"""
+        prev = (self.tts_voice_id, self.tts_speech_rate, self.tts_pitch_rate)
         profile = next(
             (p for p in self.tts_profiles if p.get("voiceId") == voice_id),
             None
@@ -539,7 +553,16 @@ class TTSLiveService:
             self.current_profile_index = idx
             self.tts_speech_rate = float(profile.get("speechRate") or config["tts"]["speech_rate"])
             self.tts_pitch_rate = float(profile.get("pitchRate") or config["tts"]["pitch_rate"])
+        else:
+            # 未命中 profile：rate/pitch 回落到全局默认，避免沿用旧值造成"音色变了语速不变"
+            self.tts_speech_rate = float(config["tts"]["speech_rate"])
+            self.tts_pitch_rate = float(config["tts"]["pitch_rate"])
 
+        self._config_dirty = True
         if self.synthesizer and not (self.callback and self.callback.playing):
             self._close_synthesizer()
-        logger.info(f"会话{self.session_id}切换音色到 {voice_id}（下一句生效）")
+        logger.info(
+            f"会话{self.session_id}切换音色（下一句生效）: "
+            f"{prev} -> (voice={self.tts_voice_id}, rate={self.tts_speech_rate}, pitch={self.tts_pitch_rate}) "
+            f"profile_hit={profile is not None}"
+        )
