@@ -69,8 +69,13 @@ class TTSStreamCallback(ResultCallback):
         """错误回调"""
         logger.error(f"[TTS] on_error: {msg}")
         self.has_error = True
-        # asyncio.create_task(self._set_completed_event())
-        self.play_completed.set()
+        # 立即清理资源，为重启做准备
+        self.close()
+        # 通知 TTSLiveService 重启流式播报
+        if self.tts_service:
+            logger.info("通知 TTSLiveService 重启流式播报")
+            # 设置完成事件，让 _process_queue 继续处理下一个句子
+            self.play_completed.set()
 
     def on_close(self):
         """连接关闭时清理资源"""
@@ -292,9 +297,18 @@ class TTSLiveService:
                 await asyncio.sleep(0.1)
                 try:
                     await asyncio.wait_for(self.callback.play_completed.wait(), timeout=15.0)
+                    # 检查是否有错误发生
+                    if self.callback.has_error:
+                        logger.warning("检测到TTS错误，准备重启流式播报")
+                        # 重置错误标志
+                        self.callback.has_error = False
+                        # 重新启动流式播报
+                        await self.start_streaming()
                     self.callback.play_completed.clear()
                 except asyncio.TimeoutError:
                     logger.warning(f"文本播放超时: {sentence[:20]}...")
+                    # 超时也视为错误，重启流式播报
+                    await self.start_streaming()
             except Exception as e:
                 import traceback
                 logger.error(f"发送文本块时出错: {traceback.print_exc()}")
