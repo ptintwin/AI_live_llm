@@ -9,10 +9,14 @@ import os
 import traceback
 import uuid
 from datetime import datetime
-from fastapi import FastAPI, BackgroundTasks
+from fastapi import FastAPI, BackgroundTasks, WebSocket, WebSocketDisconnect
 import uvicorn
 from yaml import safe_load
-from core.models import *
+from core.models import (
+    StartStreamRequest, LiveDanmuRequest, SwitchVoiceRoleRequest,
+    SwitchVoiceProfileRequest, StopSessionRequest, UpdateConfigRequest,
+    VoiceCloneRequest, TTSRequest, DanmuLevelRequest
+)
 from core.danmu_service import DanmuService
 from core.llm_service import LLMLiveService
 from core.tts_service import TTSLiveService
@@ -40,10 +44,34 @@ app = FastAPI(title="抖音游戏主播直播互动系统", version="1.0")
 # 全局会话管理（session_id: {llm, tts task, danmu_lock, danmu_task}）
 SESSIONS = {}
 
+# 音频 WebSocket 客户端管理（session_id: set of WebSocket）
+AUDIO_CLIENTS: dict[str, set] = {}
+
 # ------------------- 核心接口 -------------------
 @app.get("/health_check", summary="服务健康检查")
 async def health_check():
     return {"status": "ok", "sessions_count": len(SESSIONS)}
+
+
+@app.websocket("/ws/audio/{session_id}")
+async def audio_ws(websocket: WebSocket, session_id: str):
+    """前端音频 WebSocket 连接 — 接收 TTS 生成的 PCM 音频流"""
+    await websocket.accept()
+    if session_id not in AUDIO_CLIENTS:
+        AUDIO_CLIENTS[session_id] = set()
+    AUDIO_CLIENTS[session_id].add(websocket)
+    logger.info(f"会话{session_id}新增音频 WS 客户端，当前连接数: {len(AUDIO_CLIENTS[session_id])}")
+    try:
+        while True:
+            # 保持连接，等待断开
+            await websocket.receive_text()
+    except WebSocketDisconnect:
+        pass
+    except Exception:
+        pass
+    finally:
+        AUDIO_CLIENTS.get(session_id, set()).discard(websocket)
+        logger.info(f"会话{session_id}音频 WS 客户端断开，剩余连接数: {len(AUDIO_CLIENTS.get(session_id, set()))}")
 
 
 @app.post("/start_stream", summary="开启流式直播讲解")
@@ -62,9 +90,22 @@ async def start_stream(req: StartStreamRequest, background_tasks: BackgroundTask
         logger.info(f"room_config（脱敏）: {json.dumps(redact_room_config_for_log(room_config), indent=4, ensure_ascii=False)}")
     else:
         logger.warning("未获取到远端配置，将使用本地 config.yaml / prompts；DashScope 凭据依赖环境变量 DASHSCOPE_API_KEY")
+
+    # 初始化音频 WS 客户端集合（前端 connect 时会自动加入）
+    AUDIO_CLIENTS[session_id] = set()
+
+    # 音频广播函数：将 PCM 数据推送给所有已连接的前端 WS 客户端
+    async def audio_broadcast(data: bytes):
+        clients = list(AUDIO_CLIENTS.get(session_id, set()))
+        for ws in clients:
+            try:
+                await ws.send_bytes(data)
+            except Exception:
+                AUDIO_CLIENTS.get(session_id, set()).discard(ws)
+
     # 初始化核心服务（使用直播间专属配置）
     llm_service = LLMLiveService(session_id, room_config)
-    tts_service = TTSLiveService(session_id, room_config)
+    tts_service = TTSLiveService(session_id, room_config, audio_broadcast_fn=audio_broadcast)
 
     # 后台任务：循环生成讲解+播放
     async def live_loop():
@@ -232,8 +273,52 @@ async def stop_session(req: StopSessionRequest):
     if "danmu_task" in session:
         session["danmu_task"].cancel()
     session["tts"].close()
+    # 关闭音频 WS 客户端
+    for ws in list(AUDIO_CLIENTS.pop(req.session_id, set())):
+        try:
+            await ws.close()
+        except Exception:
+            pass
     logger.info(f"会话{req.session_id}已停止并清理")
     return {"session_id": req.session_id, "status": "stopped"}
+
+
+@app.post("/force_stop_session", summary="强制停止指定会话（关播失败时兜底）")
+async def force_stop_session(req: StopSessionRequest):
+    """强制停止 — 取消所有任务不等待，忽略所有错误，关闭音频 WS"""
+    session = SESSIONS.pop(req.session_id, None)
+    if not session:
+        return {"session_id": req.session_id, "status": "not_found"}
+
+    for key in ("task", "danmu_task"):
+        t = session.get(key)
+        if t:
+            t.cancel()
+    try:
+        session["tts"].close()
+    except Exception:
+        pass
+    for ws in list(AUDIO_CLIENTS.pop(req.session_id, set())):
+        try:
+            await ws.close()
+        except Exception:
+            pass
+    logger.info(f"会话{req.session_id}已强制停止")
+    return {"session_id": req.session_id, "status": "force_stopped"}
+
+
+@app.post("/switch_voice_profile", summary="按 profile 索引切换音色")
+async def switch_voice_profile(req: SwitchVoiceProfileRequest):
+    session = SESSIONS.get(req.session_id)
+    if not session:
+        return {"error": "会话不存在"}
+    try:
+        logger.info(f"会话{req.session_id}切换 profile 索引: {req.profile_index}")
+        session["tts"].switch_voice_by_profile(req.profile_index)
+    except Exception:
+        logger.error(f"切换 profile 失败: {traceback.format_exc()}")
+        return {"error": "切换失败"}
+    return {"session_id": req.session_id, "status": "switching", "profile_index": req.profile_index}
 
 
 @app.post("/update_llm_config", summary="更新直播间配置")

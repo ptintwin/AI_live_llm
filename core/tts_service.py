@@ -2,16 +2,13 @@
 """
 CosyVoice流式TTS服务
 满足：实时流式播放、自然中断、克隆音色、回调接口
+音频通过 WebSocket 流式传输到前端，不再使用 PyAudio 本地播放
 """
-import os
-import time
 import asyncio
 import traceback
 from dashscope.audio.tts_v2 import SpeechSynthesizer, AudioFormat, ResultCallback
 from yaml import safe_load
-from collections import deque
 from config.prompts import TTS_INSTRUCTION
-from utils.audio_utils import get_pyaudio_instance, close_audio_stream, AUDIO_CONFIG
 from utils.logger import logger
 
 # 加载配置
@@ -19,183 +16,105 @@ with open("./config/config.yaml", "r", encoding="utf-8") as f:
     config = safe_load(f)
 
 
-class TTSStreamCallback(ResultCallback):
-    """TTS流式回调：实时播放音频"""
 
-    def __init__(self, tts_service):
-        self.p = None
-        self.stream = None
+# 22050Hz 单声道 16-bit PCM：每秒字节数 = 22050 * 2
+_PCM_BYTES_PER_SEC = 44100
+
+
+class TTSStreamCallback(ResultCallback):
+    """TTS流式回调：将音频数据通过 WebSocket 广播到前端"""
+
+    def __init__(self, tts_service, audio_broadcast_fn=None):
         self.playing = False
         self.tts_service = tts_service
         self.play_completed = asyncio.Event()
         self.has_error = False
-
-        # 新增：用于跟踪播放状态
-        self.audio_buffer = deque()
         self.total_bytes_received = 0
-        self.bytes_played = 0
-        self.playback_task = None  # 播放任务
-        self._lock = asyncio.Lock()
-        self.frames_per_buffer = AUDIO_CONFIG['frames_per_buffer']
+        # 由 TTSLiveService 提供的异步广播函数 async def(data: bytes) -> None
+        self.audio_broadcast_fn = audio_broadcast_fn
+        self._complete_timer_task = None
 
     def on_open(self):
-        """WebSocket连接打开时初始化音频播放器"""
+        """TTS WebSocket 连接打开"""
         logger.info("TTS WebSocket连接已打开")
-        try:
-            self.p = get_pyaudio_instance()
-            self.stream = self.p.open(**AUDIO_CONFIG)
-            logger.info("音频播放器初始化成功")
-
-            # 启动后台播放任务
-            self.playback_task = asyncio.create_task(self._playback_worker())
-        except Exception as e:
-            logger.error(f"初始化音频播放器失败: {e}")
 
     def on_data(self, data: bytes):
-        """接收音频数据，添加到缓冲队列"""
+        """接收音频数据 — 广播给所有前端 WebSocket 客户端"""
         logger.debug(f"[TTS] on_data: 接收音频块，大小: {len(data)} 字节")
-        if self.stream:
-            # 将音频数据添加到缓冲队列（线程安全）
-            self.audio_buffer.append(data)
-            self.total_bytes_received += len(data)
+        self.playing = True
+        self.total_bytes_received += len(data)
+        if self.audio_broadcast_fn:
+            asyncio.create_task(self.audio_broadcast_fn(data))
 
     def on_complete(self):
-        """合成完成回调 - 服务端通知合成完成"""
+        """合成完成 — 按音频时长估算播放完成时间"""
         logger.info("[TTS] on_complete: 服务端通知合成完成！")
-        # 实际播放完成由_playback_worker检测
         self.has_error = False
+        # 估算播放时长（秒）；额外留 0.3s 缓冲
+        duration = self.total_bytes_received / _PCM_BYTES_PER_SEC + 0.3
+        if self._complete_timer_task and not self._complete_timer_task.done():
+            self._complete_timer_task.cancel()
+        self._complete_timer_task = asyncio.create_task(self._delayed_complete(duration))
+
+    async def _delayed_complete(self, delay: float):
+        try:
+            await asyncio.sleep(delay)
+            self.playing = False
+            self.play_completed.set()
+            logger.info(f"[TTS] 估算播放完成（延迟 {delay:.2f}s）")
+        except asyncio.CancelledError:
+            pass
 
     def on_error(self, msg):
         """错误回调"""
         logger.error(f"[TTS] on_error: {msg}")
         self.has_error = True
-        # 立即清理资源，为重启做准备
+        self.playing = False
         self.close()
-        # 通知 TTSLiveService 重启流式播报
         if self.tts_service:
             logger.info("通知 TTSLiveService 重启流式播报")
-            # 设置完成事件，让 _process_queue 继续处理下一个句子
             self.play_completed.set()
 
     def on_close(self):
-        """连接关闭时清理资源"""
+        """连接关闭"""
         logger.info("[TTS] on_close: 已触发")
         self.close()
 
-    async def _playback_worker(self):
-        try:
-            while True:
-                # 检查stream是否已经关闭
-                if not self.stream:
-                    logger.info("音频流已关闭，播放工作线程退出")
-                    break
-
-                if self.audio_buffer:
-                    data = self.audio_buffer.popleft()  # 从左边取数据
-                    try:
-                        self.playing = True
-                        if self.stream:  # 再次检查stream是否存在
-                            self.stream.write(data)
-                            self.bytes_played += len(data)
-
-                            # 检查是否播放完成
-                            if self._is_playback_complete():
-                                logger.info("音频播放完成，设置完成事件")
-                                await self._set_completed_event()
-                    except Exception as e:
-                        logger.error(f"播放音频块时出错: {e}")
-                        self.playing = False
-                else:
-                    await asyncio.sleep(0.01)
-
-                    # 超时保护：如果长时间没有新数据且已收到 on_complete，则强制完成
-                    if self._is_playback_stalled():
-                        # logger.warning("检测到播放停滞，强制完成")
-                        await self._set_completed_event()
-                        # 不要 break，继续运行以处理后续音频
-        except asyncio.CancelledError:
-            logger.info("播放工作线程被取消")
-        except Exception as e:
-            logger.error(f"播放工作线程异常: {e}")
-        finally:
-            self.playing = False
-
-    def _is_playback_complete(self) -> bool:
-        if not self.stream:
-            return False
-        # 打印关键变量，帮助定位
-        # write_available = self.stream.get_write_available()
-        # logger.info(f"播放状态检查: 已写入={self.bytes_played}, 总计={self.total_bytes_received}, "
-        #              f"可用帧数={write_available}, 总容量={self.frames_per_buffer}, "
-        #              f"队列长度={len(self.audio_buffer)}")
-
-        all_data_written = (self.bytes_played >= self.total_bytes_received)
-        queue_empty = (len(self.audio_buffer) == 0)
-        # 调整判断逻辑：当所有数据都已写入且队列为空时，认为播放完成
-        # 不再严格要求 stream 完全为空，因为音频设备可能还有少量缓冲
-        # logger.info(f"all_data_written: {all_data_written}, queue_empty: {queue_empty}")
-
-        return all_data_written and queue_empty
-
-    def _is_playback_stalled(self) -> bool:
-        """检查播放是否停滞（超时保护）"""
-        # 如果已经收到 on_complete 且所有数据已写入，但播放仍未完成
-        # 或超过 30 秒无新数据，可视为停滞
-        if self.total_bytes_received > 0 and len(self.audio_buffer) == 0:
-            # 所有数据已接收且队列为空，认为播放已完成
-            return True
-        return False
-
     def close(self):
-        # 取消播放任务
-        if self.playback_task:
-            self.playback_task.cancel()
-            logger.info("播放任务已取消")
-
-        # 保存当前的stream和p引用
-        stream = self.stream
-        p = self.p
-
-        # 立即设置为None，避免重复关闭
-        self.stream = None
-        self.p = None
-
-        if stream and p:
-            try:
-                # 给设备一点时间完成播放
-                time.sleep(0.1)
-                close_audio_stream(p, stream)
-                logger.info("音频流和播放器已关闭")
-            except Exception as e:
-                logger.error(f"关闭音频流时出错: {e}")
-        else:
-            logger.info("音频流和播放器已关闭，跳过重复关闭")
+        """清理回调资源"""
+        if self._complete_timer_task and not self._complete_timer_task.done():
+            self._complete_timer_task.cancel()
+        self.playing = False
+        logger.info("[TTS] TTSStreamCallback 已关闭")
 
     async def _set_completed_event(self):
         self.play_completed.set()
 
 
 class TTSLiveService:
-    """TTS实时服务类，负责管理流式语音合成和播放"""
+    """TTS实时服务类，负责管理流式语音合成和音频 WebSocket 广播"""
 
-    def __init__(self, session_id: str, room_config: dict = None):
+    def __init__(self, session_id: str, room_config: dict = None, audio_broadcast_fn=None):
         """初始化TTS服务
 
         Args:
             session_id: 会话ID，用于日志跟踪
             room_config: 直播间配置，用于覆盖 TTS 参数
+            audio_broadcast_fn: 异步函数 async def(data: bytes)，将 PCM 音频广播到前端 WebSocket
         """
         rc = room_config or {}
         self.session_id = session_id
         self.tts_enabled = True
         self.tts_model_name = rc.get("ttsModelName") or config["tts"]["model_name"]
         self.tts_profiles = rc.get("ttsProfiles") or []
+        self.current_profile_index = 0  # 当前激活的 profile 索引，用于配置更新时保持语速/音调
         first = self.tts_profiles[0] if self.tts_profiles else {}
         self.tts_voice_id = first.get("voiceId") or config["tts"]["voice_id"]
         self.tts_speech_rate = float(first.get("speechRate") or config["tts"]["speech_rate"])
         self.tts_pitch_rate = float(first.get("pitchRate") or config["tts"]["pitch_rate"])
         self.tts_instruction = rc.get("ttsInstruction") or TTS_INSTRUCTION
-        self.callback = TTSStreamCallback(self)
+        self.audio_broadcast_fn = audio_broadcast_fn
+        self.callback = TTSStreamCallback(self, audio_broadcast_fn=audio_broadcast_fn)
         self.synthesizer = None
         # 以下是互动弹幕队列
         self.mandatory_queue = asyncio.Queue()  # 必播句队列
@@ -212,7 +131,7 @@ class TTSLiveService:
         """初始化synthesizer实例"""
         logger.info(f"会话{self.session_id}初始化TTS synthesizer")
         try:
-            self.callback = TTSStreamCallback(self)
+            self.callback = TTSStreamCallback(self, audio_broadcast_fn=self.audio_broadcast_fn)
             self.synthesizer = SpeechSynthesizer(
                 model=self.tts_model_name,
                 voice=self.tts_voice_id,
@@ -284,11 +203,10 @@ class TTSLiveService:
                     logger.error(f"启动TTS synthesizer时出错: {e}")
                     continue
 
-            # 重置播放完成事件和播放状态
+            # 重置播放完成事件和字节计数（用于估算播放时长）
             self.callback.play_completed.clear()
-            # 重置播放状态变量，确保新的音频播放从0开始计数
-            self.callback.bytes_played = 0
             self.callback.total_bytes_received = 0
+            self.callback.playing = False
 
             # 流式发送文本
             logger.debug(f"发送文本块: {sentence[:20]}...")
@@ -315,10 +233,9 @@ class TTSLiveService:
                 # 尝试重新启动并发送
                 try:
                     await self.start_streaming()
-                    # 重置播放完成事件和播放状态
                     self.callback.play_completed.clear()
-                    self.callback.bytes_played = 0
                     self.callback.total_bytes_received = 0
+                    self.callback.playing = False
                     self.synthesizer.streaming_call(sentence)
                     await asyncio.sleep(0.1)
                     try:
@@ -503,7 +420,7 @@ class TTSLiveService:
         logger.info(f"会话{self.session_id}TTS服务已关闭")
 
     def update_config(self, room_config: dict):
-        """更新服务配置
+        """更新服务配置（保留当前激活的 profile 索引，不重置语速/音调）
 
         Args:
             room_config: 新的直播间配置
@@ -512,10 +429,12 @@ class TTSLiveService:
         self.tts_enabled = True
         self.tts_model_name = rc.get("ttsModelName") or config["tts"]["model_name"]
         self.tts_profiles = rc.get("ttsProfiles") or []
-        first = self.tts_profiles[0] if self.tts_profiles else {}
-        self.tts_voice_id = first.get("voiceId") or config["tts"]["voice_id"]
-        self.tts_speech_rate = float(first.get("speechRate") or config["tts"]["speech_rate"])
-        self.tts_pitch_rate = float(first.get("pitchRate") or config["tts"]["pitch_rate"])
+        # 保留直播中当前激活的 profile，防止切换后配置热更新把语速/音调重置为 profile 0
+        idx = self.current_profile_index if self.current_profile_index < len(self.tts_profiles) else 0
+        active = self.tts_profiles[idx] if self.tts_profiles else {}
+        self.tts_voice_id = active.get("voiceId") or config["tts"]["voice_id"]
+        self.tts_speech_rate = float(active.get("speechRate") or config["tts"]["speech_rate"])
+        self.tts_pitch_rate = float(active.get("pitchRate") or config["tts"]["pitch_rate"])
         self.tts_instruction = rc.get("ttsInstruction") or TTS_INSTRUCTION
 
         # 重新初始化synthesizer以应用新配置，但要确保当前播报完成
@@ -543,14 +462,41 @@ class TTSLiveService:
         # 异步执行更新
         asyncio.create_task(update_synthesizer())
 
+    def switch_voice_by_profile(self, index: int):
+        """按 profile 索引切换音色（传输原始 DashScope voice ID，不依赖前端解析）"""
+        if index < 0 or index >= len(self.tts_profiles):
+            logger.warning(f"会话{self.session_id} switch_voice_by_profile 索引越界: {index}，共 {len(self.tts_profiles)} 个 profile")
+            return
+        profile = self.tts_profiles[index]
+        self.current_profile_index = index
+        self.tts_voice_id = profile.get("voiceId") or config["tts"]["voice_id"]
+        self.tts_speech_rate = float(profile.get("speechRate") or config["tts"]["speech_rate"])
+        self.tts_pitch_rate = float(profile.get("pitchRate") or config["tts"]["pitch_rate"])
+        logger.info(f"会话{self.session_id}切换到 profile[{index}]: voice={self.tts_voice_id} rate={self.tts_speech_rate} pitch={self.tts_pitch_rate}")
+
+        async def do_switch():
+            if self.callback and self.callback.playing:
+                try:
+                    await asyncio.wait_for(self.callback.play_completed.wait(), timeout=15.0)
+                except asyncio.TimeoutError:
+                    logger.warning("等待播报完成超时，强制切换音色")
+            if self.synthesizer:
+                self._close_synthesizer()
+            await self.start_streaming()
+            logger.info(f"会话{self.session_id}已完成切换到 profile[{index}]，voice={self.tts_voice_id}")
+
+        asyncio.create_task(do_switch())
+
     def switch_voice(self, voice_id: str):
-        """切换到指定音色，并应用该音色的 speechRate/pitchRate"""
+        """按 voice_id 切换（兼容旧接口，推荐改用 switch_voice_by_profile）"""
         profile = next(
             (p for p in self.tts_profiles if p.get("voiceId") == voice_id),
             None
         )
         self.tts_voice_id = voice_id
         if profile:
+            idx = self.tts_profiles.index(profile)
+            self.current_profile_index = idx
             self.tts_speech_rate = float(profile.get("speechRate") or config["tts"]["speech_rate"])
             self.tts_pitch_rate = float(profile.get("pitchRate") or config["tts"]["pitch_rate"])
 

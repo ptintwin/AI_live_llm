@@ -29,6 +29,11 @@ class SwitchVoiceRoleRequest(BaseModel):
     voice_id: str = Field(..., description="音色id")
 
 
+class SwitchVoiceProfileRequest(BaseModel):
+    session_id: str = Field(..., description="直播间唯一会话ID")
+    profile_index: int = Field(..., description="TTS profile 索引（0-based），Python 直接用索引取已解析的 DashScope voice ID")
+
+
 class StopSessionRequest(BaseModel):
     session_id: str = Field(..., description="直播间唯一会话ID")
 
