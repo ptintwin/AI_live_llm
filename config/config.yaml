@@ -46,3 +46,66 @@ server:
 # Spring Boot 后端地址（Python 开播时调用此地址读取直播间 LLM 配置）
 spring_boot:
   base_url: "http://localhost:8080"
+
+# RAG配置
+rag:
+  enabled: true
+  docs_path: "docs/organized_Q&A.txt"
+  vector_db_path: "data/chroma_db"
+  embedding_model_path: "core/rag/embedding_models/bge-base-zh-v1dot5"
+  retrieve_k: 3
+  enable_reranker: false
+  rerank_top_n: 2
+  reranker_model_path: "core/rag/embedding_models/bge-reranker-base"
+  trigger_mode: "hybrid"
+  rule_keywords:
+    - "福利"
+    - "东西"
+    - "有什么"
+    - "有啥"
+    - "代金"
+    - "代金券"
+    - "版本"
+    - "无解版"
+    - "纯享版"
+    - "新区"
+    - "哪个区"
+    - "怎么玩"
+    - "如何进"
+    - "进游"
+    - "上线"
+    - "下载"
+    - "职业"
+    - "角色"
+    - "什么职业"
+    - "氪"
+    - "钱"
+    - "花多少"
+    - "微氪"
+    - "0氪"
+    - "画面"
+    - "打击"
+    - "特效"
+    - "画质"
+    - "真实"
+    - "真的"
+    - "所见即所得"
+    - "有没有"
+    - "什么游戏"
+    - "好玩"
+    - "类型"
+    - "坐骑"
+    - "羽毛"
+    - "翅膀"
+    - "装备"
+    - "怎么搞"
+    - "如何弄"
+    - "在哪"
+    - "多少"
+    - "几个"
+    - "多久"
+    - "能吗"
+    - "可以吗"
+    - "要吗"
+  semantic_threshold: 0.5
+  similarity_threshold: 0.5

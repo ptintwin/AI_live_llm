@@ -69,3 +69,6 @@ Thumbs.db
 # 模型数据大文件
 embedding_models/
 data/
+
+# 示例项目文件
+example/

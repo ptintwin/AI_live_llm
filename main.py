@@ -8,7 +8,9 @@ import json
 import os
 import traceback
 import uuid
+from contextlib import asynccontextmanager
 from datetime import datetime
+from typing import Optional
 from fastapi import FastAPI, BackgroundTasks, WebSocket, WebSocketDisconnect
 import uvicorn
 from yaml import safe_load
@@ -38,10 +40,55 @@ from utils.spring_llm_config import (
 with open("./config/config.yaml", "r", encoding="utf-8") as f:
     config = safe_load(f)
 
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """应用生命周期管理"""
+    startup()
+    yield
+    shutdown()
+
+
+def startup():
+    """应用启动时执行"""
+    warmup_rag()
+
+
+def shutdown():
+    """应用关闭时执行"""
+    pass
+
+
 # 初始化FastAPI
-app = FastAPI(title="抖音游戏主播直播互动系统", version="1.0")
+app = FastAPI(title="抖音游戏主播直播互动系统", version="1.0", lifespan=lifespan)
 
 # 全局会话管理（session_id: {llm, tts task, danmu_lock, danmu_task}）
+SESSIONS = {}
+
+# RAG服务预热标志
+RAG_WARMED = False
+
+
+def warmup_rag():
+    """全局RAG服务预热"""
+    global RAG_WARMED
+    if RAG_WARMED:
+        return
+    try:
+        from core.rag import get_rag_service, get_document_count
+        rag_service = get_rag_service()
+        doc_count = get_document_count()
+        logger.info(f"RAG服务预热完成，向量库文档数量: {doc_count}")
+        RAG_WARMED = True
+    except Exception as e:
+        logger.warning(f"RAG服务预热失败: {e}")
+        RAG_WARMED = False
+
+
+# 启动时预热RAG
+
+
+
 SESSIONS = {}
 
 # 音频 WebSocket 客户端管理（session_id: set of WebSocket）
@@ -168,7 +215,7 @@ async def start_stream(req: StartStreamRequest, background_tasks: BackgroundTask
                         danmu_cache = SESSIONS[session_id]["danmu_cache"].copy()
                         SESSIONS[session_id]["danmu_cache"] = []
 
-                    logger.info(f"会话{session_id}开始处理弹幕缓存：{len(danmu_cache)}条弹幕")
+                    logger.info(f"会话{session_id}开始处理{len(danmu_cache)}条弹幕缓存：{danmu_cache}")
 
                     max_level = DanmuService.get_max_level(danmu_cache)
                     await danmu_service.handle_danmu_queues(max_level, danmu_cache, llm_service, tts_service)
@@ -348,6 +395,96 @@ async def update_config(req: UpdateConfigRequest):
         }
     except Exception as e:
         logger.error(f"更新配置失败: {e}")
+        return {"error": str(e), "status": "failed"}
+
+
+@app.get("/rag_status", summary="查询RAG向量库状态")
+async def rag_status():
+    """查询RAG向量库状态"""
+    try:
+        from core.rag import get_vector_store_status, get_document_count
+        status = get_vector_store_status()
+        return {"status": "success", **status}
+    except Exception as e:
+        logger.error(f"查询RAG状态失败: {e}")
+        return {"error": str(e), "status": "failed"}
+
+
+@app.post("/rebuild_rag_index", summary="重建RAG向量库")
+async def rebuild_rag_index(force: bool = True):
+    """
+    重建RAG向量库
+    - force=True: 强制重建（删除旧库，重新从文档解析入库）
+    - force=False: 仅在向量库为空时构建
+    """
+    try:
+        from core.rag import reset_rag_service, get_rag_service, reload_rag_config, get_document_count
+        reload_rag_config()
+        reset_rag_service()
+        rag_service = get_rag_service(force_rebuild=force)
+        doc_count = get_document_count()
+        global RAG_WARMED
+        RAG_WARMED = True
+        logger.info(f"RAG向量库重建完成，文档数量: {doc_count}")
+        return {"status": "success", "document_count": doc_count}
+    except Exception as e:
+        logger.error(f"重建RAG向量库失败: {e}")
+        return {"error": str(e), "status": "failed"}
+
+
+@app.post("/clear_rag_index", summary="清空RAG向量库")
+async def clear_rag_index():
+    """清空RAG向量库"""
+    try:
+        from core.rag import clear_vector_store, reset_rag_service, reset_decider
+        clear_vector_store()
+        reset_rag_service()
+        reset_decider()
+        global RAG_WARMED
+        RAG_WARMED = False
+        logger.info("RAG向量库已清空")
+        return {"status": "success", "message": "向量库已清空"}
+    except Exception as e:
+        logger.error(f"清空RAG向量库失败: {e}")
+        return {"error": str(e), "status": "failed"}
+
+
+@app.get("/rag_search", summary="RAG检索测试")
+async def rag_search(q: str, top_k: int = 3):
+    """RAG检索测试接口"""
+    try:
+        from core.rag import retrieve_with_answers, should_use_rag
+        if not q:
+            return {"error": "请提供查询参数 q"}
+        should_use = should_use_rag(q)
+        answers = retrieve_with_answers(q) if should_use else []
+        return {
+            "status": "success",
+            "question": q,
+            "trigger_rag": should_use,
+            "answers": answers[:top_k]
+        }
+    except Exception as e:
+        logger.error(f"RAG检索失败: {e}")
+        return {"error": str(e), "status": "failed"}
+
+
+@app.get("/rag_decider_test", summary="RAG触发判断测试")
+async def rag_decider_test(q: str):
+    """测试RAG触发判断"""
+    try:
+        from core.rag import should_use_rag, get_rag_decider
+        decider = get_rag_decider()
+        should_use = should_use_rag(q)
+        reason = decider.get_match_reason(q)
+        return {
+            "status": "success",
+            "question": q,
+            "trigger_rag": should_use,
+            "reason": reason
+        }
+    except Exception as e:
+        logger.error(f"RAG触发判断测试失败: {e}")
         return {"error": str(e), "status": "failed"}
 
 

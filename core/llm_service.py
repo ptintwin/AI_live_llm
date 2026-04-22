@@ -4,6 +4,7 @@
 满足：临时缓存、历史记录限制、段落流式生成、自然中断、循环续讲
 """
 import re
+import random
 import asyncio
 import time
 from http import HTTPStatus
@@ -13,6 +14,7 @@ from dashscope.aigc.generation import AioGeneration
 from yaml import safe_load
 from config.prompts import SYSTEM_PROMPT, CURRENT_LIVE_ROOM_PROMPT, CONTINUE_PROMPT, INTERACT_PROMPT, DANMU_LEVEL_PROMPT
 from utils.logger import logger
+from core.rag import get_rag_service, get_rag_config
 
 # 加载配置
 with open("./config/config.yaml", "r", encoding="utf-8") as f:
@@ -66,6 +68,12 @@ class LLMLiveService:
                 ]
             }
         ]
+
+        rag_config = get_rag_config()
+        self.rag_enabled = rag_config.get("enabled", True)
+        self.rag_service = None
+        if self.rag_enabled:
+            self.rag_service = get_rag_service()
 
     def _trim_history(self):
         """裁剪历史：仅保留最近指定次数的assistant对话及其相关的其他角色对话"""
@@ -250,23 +258,39 @@ class LLMLiveService:
 
     async def handle_interact(self, danmu_list: list) -> AsyncGenerator[str, Any]:
         """处理观众互动弹幕（自然中断后调用）"""
-        # 构建弹幕摘要
         danmu_summary = ""
+        rag_context = ""
+        rag_hit_count = 0
 
-        # 构建弹幕摘要，按时间顺序从新到旧处理
         for danmu in danmu_list:
             username = getattr(danmu, 'username', '观众')
             content = getattr(danmu, 'content', '')
             danmu_type = getattr(danmu, 'type', '')
+
+            if self.rag_enabled and self.rag_service and danmu_type == 'question':
+                if self.rag_service.should_use_rag(content):
+                    answers = self.rag_service.get_answer(content)
+                    if answers:
+                        chosen_answer = random.choice(answers) if len(answers) > 1 else answers[0]
+                        rag_context += f"【问题】：{content}\n【参考回复】：{chosen_answer}\n\n"
+                        rag_hit_count += 1
+                        logger.info(f"RAG命中: 问题='{content}', 答案='{chosen_answer[:30]}...'")
 
             prefix_map = {'question': "【互动问题类】", 'gift': "【礼物灯牌类】", 'enter': "【进入直播间】",
                           'follow': "【关注或点赞类】"}
             suffix_pmt = f"观众‘{username}’：{content}\n" if danmu_type == 'question' else f"观众‘{username}’{content}\n"
             danmu_summary += (prefix_map[danmu_type] + suffix_pmt)
 
-        prompt = self.interact_prompt.format(danmu_summary=danmu_summary)
+        if rag_hit_count > 0:
+            logger.info(f"RAG本次命中 {rag_hit_count} 个问题，已添加到prompt中")
+
+        prompt = self.interact_prompt.format(danmu_summary=danmu_summary, rag_context=rag_context)
+
+        full_response = ""
         async for chunk in self._stream_llm_response(prompt, True, danmu_summary=danmu_summary):
+            full_response += chunk
             yield chunk
+
         self.user_focus_cycle = 1
 
     def set_loop_interrupt(self, flag: bool):
