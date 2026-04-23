@@ -81,23 +81,21 @@ class RAGService:
         from core.rag.retriever import retrieve
         docs = retrieve(question)
 
-        answers = []
+        all_answers = []
+        docs_info = []
         for doc in docs:
-            answer = doc.metadata.get("answer", "")
-            if answer:
-                answers.append(answer)
+            answers = doc.metadata.get("answers", [])
+            all_answers.extend(answers)
+            docs_info.append({
+                "content": doc.page_content,
+                "question": doc.metadata.get("question", ""),
+                "answers": answers,
+                "score": doc.metadata.get("rerank_score", 0.0)
+            })
 
         return {
-            "answers": answers,
-            "docs": [
-                {
-                    "content": doc.page_content,
-                    "question": doc.metadata.get("question", ""),
-                    "answer": doc.metadata.get("answer", ""),
-                    "score": doc.metadata.get("rerank_score", 0.0)
-                }
-                for doc in docs
-            ]
+            "answers": all_answers,
+            "docs": docs_info
         }
 
     def should_use_rag(self, question: str) -> bool:

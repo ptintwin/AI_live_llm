@@ -5,6 +5,7 @@ from langchain_core.documents import Document
 from langchain_core.embeddings import Embeddings
 from langchain_chroma import Chroma
 
+from utils.logger import logger
 from core.rag.config import get_rag_config
 from core.rag.embedding import get_embedding_model, embed_query, embed_documents
 
@@ -59,17 +60,17 @@ def init_vector_store(force_rebuild: bool = False) -> Chroma:
     if os.path.exists(persist_directory) and os.listdir(persist_directory):
         if force_rebuild:
             shutil.rmtree(persist_directory)
-            print(f"已删除旧向量库: {persist_directory}")
+            logger.info(f"已删除旧向量库: {persist_directory}")
             _vector_store = None
         else:
-            print(f"加载已有向量库: {persist_directory}")
+            logger.info(f"加载已有向量库: {persist_directory}")
             _vector_store = Chroma(
                 embedding_function=embeddings,
                 persist_directory=persist_directory
             )
             return _vector_store
 
-    print(f"创建新向量库: {persist_directory}")
+    logger.info(f"创建新向量库: {persist_directory}")
     _vector_store = Chroma(
         embedding_function=embeddings,
         persist_directory=persist_directory
@@ -97,7 +98,7 @@ def add_documents(documents: List[Document]) -> int:
         return 0
 
     _vector_store.add_documents(documents)
-    print(f"已添加 {len(documents)} 个文档到向量库")
+    logg(f"已添加 {len(documents)} 个文档到向量库")
     return len(documents)
 
 
@@ -173,10 +174,10 @@ def clear_vector_store() -> bool:
         if os.path.exists(persist_directory):
             shutil.rmtree(persist_directory)
 
-        print("向量库已清空")
+        logger.info("向量库已清空")
         return True
     except Exception as e:
-        print(f"清空向量库失败: {e}")
+        logger.error(f"清空向量库失败: {e}")
         return False
 
 

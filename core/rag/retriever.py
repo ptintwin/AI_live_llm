@@ -89,15 +89,14 @@ def retrieve_with_answers(query: str) -> List[str]:
         query: 查询文本
 
     Returns:
-        答案列表
+        答案列表（一个问题的所有答案）
     """
     docs = retrieve(query)
 
     answers = []
     for doc in docs:
-        answer = doc.metadata.get("answer", "")
-        if answer:
-            answers.append(answer)
+        doc_answers = doc.metadata.get("answers", [])
+        answers.extend(doc_answers)
 
     return answers
 

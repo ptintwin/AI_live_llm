@@ -5,6 +5,8 @@ audio_output/
 logs/
 # 所有 .txt 文件
 *.txt
+# 保留 docs/organized_Q&A.txt
+!docs/organized_Q&A.txt
 # 所有 .json 文件
 *.json
 

@@ -272,13 +272,20 @@ class LLMLiveService:
                     answers = self.rag_service.get_answer(content)
                     if answers:
                         chosen_answer = random.choice(answers) if len(answers) > 1 else answers[0]
-                        rag_context += f"【问题】：{content}\n【参考回复】：{chosen_answer}\n\n"
+                        rag_context += f"【问题】：{content}\n"
+                        for i, ans in enumerate(answers, 1):
+                            if len(answers) > 1:
+                                rag_context += f"【参考回复{i}】：{ans}\n"
+                            else:
+                                rag_context += f"【参考回复】：{ans}\n"
+                        rag_context += "\n"
                         rag_hit_count += 1
-                        logger.info(f"RAG命中: 问题='{content}', 答案='{chosen_answer[:30]}...'")
+                        answer_preview = chosen_answer[:30] + "..." if len(chosen_answer) > 30 else chosen_answer
+                        logger.info(f"RAG命中: 问题='{content}', pick答案='{answer_preview}', 共{len(answers)}个候选")
 
             prefix_map = {'question': "【互动问题类】", 'gift': "【礼物灯牌类】", 'enter': "【进入直播间】",
                           'follow': "【关注或点赞类】"}
-            suffix_pmt = f"观众‘{username}’：{content}\n" if danmu_type == 'question' else f"观众‘{username}’{content}\n"
+            suffix_pmt = f"观众'{username}'：{content}\n" if danmu_type == 'question' else f"观众'{username}'{content}\n"
             danmu_summary += (prefix_map[danmu_type] + suffix_pmt)
 
         if rag_hit_count > 0:

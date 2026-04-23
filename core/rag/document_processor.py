@@ -5,7 +5,7 @@ from langchain_core.documents import Document
 
 def parse_qa_file(file_path: str) -> List[Document]:
     """
-    解析QA问答对文件，将每个【问】+【答 N】组合为独立文档
+    解析QA问答对文件，每个【问】+ 所有【答 N】组合为一个Document
 
     格式示例：
     【问】：进游有什么福利？【答 1】：正在展示哈，东西都是摆在台面上的
@@ -13,7 +13,9 @@ def parse_qa_file(file_path: str) -> List[Document]:
     【问】：多少代金？【答 1】：直播间不能说具体哟...【答 2】：老哥格局打开...
 
     返回：
-        List[Document]: 每个问答对作为一个独立文档
+        List[Document]: 每个问题及其所有答案作为一个Document
+        - page_content: 仅存问题Q（用于embedding）
+        - metadata.answers: 存所有答案列表
     """
     documents = []
 
@@ -43,25 +45,25 @@ def parse_qa_file(file_path: str) -> List[Document]:
         if not answer_matches:
             continue
 
+        answers = []
         for answer_num, answer_content in answer_matches:
             answer = answer_content.strip()
+            if answer:
+                answers.append(answer)
 
-            if not question or not answer:
-                continue
+        if not question or not answers:
+            continue
 
-            full_content = f"【问】：{question}【答】：{answer}"
-
-            doc = Document(
-                page_content=full_content,
-                metadata={
-                    "question": question,
-                    "answer": answer,
-                    "answer_num": int(answer_num),
-                    "source": file_path,
-                    "line_num": line_num
-                }
-            )
-            documents.append(doc)
+        doc = Document(
+            page_content=question,
+            metadata={
+                "question": question,
+                "answers": answers,
+                "source": file_path,
+                "line_num": line_num
+            }
+        )
+        documents.append(doc)
 
     return documents
 
