@@ -6,117 +6,20 @@ CosyVoice流式TTS服务
 """
 import asyncio
 import traceback
-from dashscope.audio.tts_v2 import SpeechSynthesizer, AudioFormat, ResultCallback
+from dashscope.audio.tts_v2 import SpeechSynthesizer, AudioFormat
 from yaml import safe_load
 from config.prompts import TTS_INSTRUCTION
 from utils.logger import logger
+from core.tts_callbacks import WebsocketTTSStreamCallback, PyAudioTTSStreamCallback
 
 # 加载配置
 with open("./config/config.yaml", "r", encoding="utf-8") as f:
     config = safe_load(f)
 
-
-
 # 22050Hz 单声道 16-bit PCM：每秒字节数 = 22050 * 2
 _PCM_BYTES_PER_SEC = 44100
 # DashScope 流式会话需在每段文本后结束输入，否则服务端不发 FINISHED，on_complete 不会触发
 _TTS_STREAMING_COMPLETE_MS = 600_000
-
-
-class TTSStreamCallback(ResultCallback):
-    """TTS流式回调：将音频数据通过 WebSocket 广播到前端"""
-
-    def __init__(self, tts_service, audio_broadcast_fn=None, main_loop=None):
-        self.playing = False
-        self.tts_service = tts_service
-        self.play_completed = asyncio.Event()
-        self.has_error = False
-        self.total_bytes_received = 0
-        # 由 TTSLiveService 提供的异步广播函数 async def(data: bytes) -> None
-        self.audio_broadcast_fn = audio_broadcast_fn
-        # DashScope 在独立线程回调；必须用主事件循环投递协程，不可 asyncio.create_task
-        self._main_loop = main_loop
-        self._complete_future = None
-
-    def on_open(self):
-        """TTS WebSocket 连接打开"""
-        logger.info("TTS WebSocket连接已打开")
-
-    def on_data(self, data: bytes):
-        """接收音频数据 — 广播给所有前端 WebSocket 客户端"""
-        logger.debug(f"[TTS] on_data: 接收音频块，大小: {len(data)} 字节")
-        self.playing = True
-        self.total_bytes_received += len(data)
-        if not self.audio_broadcast_fn:
-            return
-        if self._main_loop is not None:
-            asyncio.run_coroutine_threadsafe(self.audio_broadcast_fn(data), self._main_loop)
-        else:
-            logger.error("[TTS] on_data: 未绑定主事件循环，无法广播 PCM")
-
-    def on_complete(self):
-        """合成完成 — 按音频时长估算播放完成时间"""
-        logger.info("[TTS] on_complete: 服务端通知合成完成！")
-        self.has_error = False
-        # 估算播放时长（秒）；额外留 0.3s 缓冲
-        duration = self.total_bytes_received / _PCM_BYTES_PER_SEC + 0.3
-        if self._complete_future and not self._complete_future.done():
-            self._complete_future.cancel()
-        self._complete_future = None
-        if self._main_loop is not None:
-            self._complete_future = asyncio.run_coroutine_threadsafe(
-                self._delayed_complete(duration), self._main_loop
-            )
-        else:
-            logger.error("[TTS] on_complete: 未绑定主事件循环")
-            self.play_completed.set()
-
-    async def _delayed_complete(self, delay: float):
-        try:
-            await asyncio.sleep(delay)
-            self.playing = False
-            self.play_completed.set()
-            logger.info(f"[TTS] 估算播放完成（延迟 {delay:.2f}s）")
-        except asyncio.CancelledError:
-            pass
-
-    def on_error(self, msg):
-        """错误回调"""
-        logger.error(f"[TTS] on_error: {msg}")
-        self.has_error = True
-        self.playing = False
-        # 立即清理资源，为重启做准备
-        self.close()
-        # 通知 TTSLiveService 重启流式播报
-        if self.tts_service:
-            logger.info("通知 TTSLiveService 重启流式播报")
-            # 设置完成事件，让 _process_queue 继续处理下一个句子
-            self.play_completed.set()
-
-    def on_close(self):
-        """连接关闭（SDK 在 on_complete 后立即调用 on_close；勿在此调用 self.close()，否则会取消
-        _delayed_complete 任务，导致 play_completed 永远不触发）"""
-        logger.info("[TTS] on_close: 已触发")
-
-    def reset(self):
-        """重置单句合成状态，在每句合成前调用（不替换回调实例，避免引用失效竞态）"""
-        self.play_completed.clear()
-        self.total_bytes_received = 0
-        self.playing = False
-        self.has_error = False
-        if self._complete_future and not self._complete_future.done():
-            self._complete_future.cancel()
-        self._complete_future = None
-
-    def close(self):
-        """清理回调资源"""
-        if self._complete_future and not self._complete_future.done():
-            self._complete_future.cancel()
-        self.playing = False
-        logger.info("[TTS] TTSStreamCallback 已关闭")
-
-    async def _set_completed_event(self):
-        self.play_completed.set()
 
 
 class TTSLiveService:
@@ -135,36 +38,38 @@ class TTSLiveService:
         self.tts_enabled = True
         self.tts_model_name = rc.get("ttsModelName") or config["tts"]["model_name"]
         self.tts_profiles = rc.get("ttsProfiles") or []
-        self.current_profile_index = 0  # 当前激活的 profile 索引，用于配置更新时保持语速/音调
+        self.current_profile_index = 0
         first = self.tts_profiles[0] if self.tts_profiles else {}
         self.tts_voice_id = first.get("voiceId") or config["tts"]["voice_id"]
         self.tts_speech_rate = float(first.get("speechRate") or config["tts"]["speech_rate"])
         self.tts_pitch_rate = float(first.get("pitchRate") or config["tts"]["pitch_rate"])
         self.tts_instruction = rc.get("ttsInstruction") or TTS_INSTRUCTION
         self.audio_broadcast_fn = audio_broadcast_fn
+        self.audio_mode = rc.get("audioMode") or config["tts"].get("audio_mode", "websocket")
+
         try:
             self._main_loop = asyncio.get_running_loop()
         except RuntimeError:
             self._main_loop = None
-        self.callback = TTSStreamCallback(
-            self, audio_broadcast_fn=audio_broadcast_fn, main_loop=self._main_loop
-        )
+
+        if self.audio_mode == "pyaudio":
+            self.callback = PyAudioTTSStreamCallback(self)
+        else:
+            self.callback = WebsocketTTSStreamCallback(
+                self, audio_broadcast_fn=audio_broadcast_fn, main_loop=self._main_loop
+            )
+
         self.synthesizer = None
-        # 配置脏标记：update_config / switch_voice* 置 True，_process_queue 在下一句前强制重建 synthesizer
         self._config_dirty = False
-        # 以下是互动弹幕队列
-        self.mandatory_queue = asyncio.Queue()  # 必播句队列
-        self.important_queue = asyncio.Queue()  # 重要句队列
-        self.normal_queue = asyncio.Queue()  # 一般句队列
-        # 以下是循环播报队列
-        self.loop_queue = asyncio.Queue()  # 循环播报队列
-        # 过渡句子，优先级低于mandatory但高于important
+        self.mandatory_queue = asyncio.Queue()
+        self.important_queue = asyncio.Queue()
+        self.normal_queue = asyncio.Queue()
+        self.loop_queue = asyncio.Queue()
         self.transitional_sentence = ""
-        # 消费任务
         self.consumer_task = None
 
     def _init_synthesizer(self):
-        """初始化synthesizer实例（复用同一 callback 实例，避免引用失效竞态）"""
+        """初始化synthesizer实例"""
         logger.info(
             f"会话{self.session_id}初始化TTS synthesizer "
             f"voice={self.tts_voice_id} rate={self.tts_speech_rate} pitch={self.tts_pitch_rate}"
@@ -174,8 +79,13 @@ class TTSLiveService:
                 self._main_loop = asyncio.get_running_loop()
             except RuntimeError:
                 pass
-            # 更新 callback 的主事件循环引用（如有变更），但不替换回调实例
-            self.callback._main_loop = self._main_loop
+
+            if self.audio_mode == "pyaudio":
+                self.callback = PyAudioTTSStreamCallback(self)
+            else:
+                if hasattr(self.callback, '_main_loop'):
+                    self.callback._main_loop = self._main_loop
+
             self.synthesizer = SpeechSynthesizer(
                 model=self.tts_model_name,
                 voice=self.tts_voice_id,
@@ -196,19 +106,22 @@ class TTSLiveService:
         self._close_synthesizer()
 
         max_retries = 3
-        retry_delay = 1.0  # 重试延迟（秒）
+        retry_delay = 1.0
 
         for retry in range(max_retries):
             try:
-                # 仅创建实例；首句 streaming_call 时再建连。避免 streaming_call(" ") 且不 complete 导致会话悬空。
                 self._init_synthesizer()
+
+                if self.audio_mode == "pyaudio":
+                    self.synthesizer.streaming_call(" ")
+                    await asyncio.sleep(0.5)
 
                 logger.info(f"会话{self.session_id}TTS synthesizer启动成功（第{retry + 1}次尝试）")
                 return
             except Exception as e:
                 logger.error(f"启动TTS synthesizer失败（尝试 {retry + 1}/{max_retries}）: {traceback.print_exc()}")
                 if retry < max_retries - 1:
-                    await asyncio.sleep(retry_delay * (retry + 1))  # 指数退避
+                    await asyncio.sleep(retry_delay * (retry + 1))
                 else:
                     raise Exception(f"无法启动TTS synthesizer，尝试{max_retries}次后失败") from e
 
@@ -252,57 +165,36 @@ class TTSLiveService:
                     logger.error(f"启动TTS synthesizer时出错: {e}")
                     continue
 
-            # 重置单句合成状态（复用同一 callback 实例）
+            # 重置单句合成状态
             self.callback.reset()
 
-            # 流式发送文本；必须 streaming_complete 结束本轮输入，服务端才会 FINISHED → on_complete
+            # 流式发送文本
             logger.debug(f"发送文本块: {sentence[:20]}...")
             try:
                 self.synthesizer.streaming_call(sentence)
-                await asyncio.sleep(0.05)
-                try:
-                    await asyncio.to_thread(
-                        self.synthesizer.streaming_complete,
-                        _TTS_STREAMING_COMPLETE_MS,
-                    )
-                except Exception as ce:
-                    logger.error(f"streaming_complete 失败: {ce}")
-                    await self.start_streaming()
-                    continue
 
-                # 本轮合成已结束，释放实例以便下一句重新建连（complete 会关闭会话）
-                self.synthesizer = None
-
-                est_playback = max(
-                    15.0,
-                    self.callback.total_bytes_received / _PCM_BYTES_PER_SEC + 10.0,
-                )
-                wait_cap = min(300.0, est_playback)
-                try:
-                    await asyncio.wait_for(self.callback.play_completed.wait(), timeout=wait_cap)
-                    # 检查是否有错误发生
-                    if self.callback.has_error:
-                        logger.warning("检测到TTS错误，准备重启流式播报")
-                        self.callback.has_error = False
-                        await self.start_streaming()
-                    self.callback.play_completed.clear()
-                except asyncio.TimeoutError:
-                    logger.warning(f"文本播放超时（估算上限 {wait_cap:.1f}s）: {sentence[:20]}...")
-                    await self.start_streaming()
-            except Exception as e:
-                logger.error(f"发送文本块时出错: {traceback.format_exc()}")
-                self.synthesizer = None
-                # 尝试重新启动并发送
-                try:
-                    await self.start_streaming()
-                    self.callback.reset()
-                    self.synthesizer.streaming_call(sentence)
+                if self.audio_mode == "pyaudio":
+                    await asyncio.sleep(0.1)
+                    timeout_seconds = 20.0
+                    try:
+                        await asyncio.wait_for(self.callback.play_completed.wait(), timeout=timeout_seconds)
+                        self.callback.play_completed.clear()
+                    except asyncio.TimeoutError:
+                        logger.warning(f"文本播放超时: {sentence[:20]}...")
+                else:
                     await asyncio.sleep(0.05)
-                    await asyncio.to_thread(
-                        self.synthesizer.streaming_complete,
-                        _TTS_STREAMING_COMPLETE_MS,
-                    )
+                    try:
+                        await asyncio.to_thread(
+                            self.synthesizer.streaming_complete,
+                            _TTS_STREAMING_COMPLETE_MS,
+                        )
+                    except Exception as ce:
+                        logger.error(f"streaming_complete 失败: {ce}")
+                        await self.start_streaming()
+                        continue
+
                     self.synthesizer = None
+
                     est_playback = max(
                         15.0,
                         self.callback.total_bytes_received / _PCM_BYTES_PER_SEC + 10.0,
@@ -310,6 +202,26 @@ class TTSLiveService:
                     wait_cap = min(300.0, est_playback)
                     try:
                         await asyncio.wait_for(self.callback.play_completed.wait(), timeout=wait_cap)
+                        if self.callback.has_error:
+                            logger.warning("检测到TTS错误，准备重启流式播报")
+                            self.callback.has_error = False
+                            await self.start_streaming()
+                        self.callback.play_completed.clear()
+                    except asyncio.TimeoutError:
+                        logger.warning(f"文本播放超时（估算上限 {wait_cap:.1f}s）: {sentence[:20]}...")
+                        await self.start_streaming()
+            except Exception as e:
+                logger.error(f"发送文本块时出错: {traceback.format_exc()}")
+                self.synthesizer = None
+                # 尝试重新启动并发送
+                try:
+                    await self.start_streaming()
+                    self.callback.reset()
+
+                    self.synthesizer.streaming_call(sentence)
+                    await asyncio.sleep(0.1)
+                    try:
+                        await asyncio.wait_for(self.callback.play_completed.wait(), timeout=20.0)
                         logger.info("重新启动后文本播放完成")
                     except asyncio.TimeoutError:
                         logger.warning("重新启动后文本播放超时")
@@ -502,7 +414,6 @@ class TTSLiveService:
         self.tts_enabled = True
         self.tts_model_name = rc.get("ttsModelName") or config["tts"]["model_name"]
         self.tts_profiles = rc.get("ttsProfiles") or []
-        # 保留直播中当前激活的 profile，防止切换后配置热更新把语速/音调重置为 profile 0
         idx = self.current_profile_index if self.current_profile_index < len(self.tts_profiles) else 0
         active = self.tts_profiles[idx] if self.tts_profiles else {}
         self.tts_voice_id = active.get("voiceId") or config["tts"]["voice_id"]
@@ -511,7 +422,6 @@ class TTSLiveService:
         self.tts_instruction = rc.get("ttsInstruction") or TTS_INSTRUCTION
 
         self._config_dirty = True
-        # 配置变量已同步更新；若当前无播报则立即关闭旧会话，下一句重建时自动应用新语速/音色
         if self.synthesizer and not (self.callback and self.callback.playing):
             self._close_synthesizer()
         logger.info(

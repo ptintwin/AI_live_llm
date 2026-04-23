@@ -35,6 +35,18 @@ from utils.spring_llm_config import (
     fetch_global_llm_settings,
     resolve_room_llm_config,
 )
+from core.rag import (
+    get_rag_service,
+    get_document_count,
+    get_vector_store_status,
+    reset_rag_service,
+    reload_rag_config,
+    clear_vector_store,
+    reset_decider,
+    retrieve_with_answers,
+    should_use_rag,
+    get_rag_decider,
+)
 
 # 加载服务配置
 with open("./config/config.yaml", "r", encoding="utf-8") as f:
@@ -75,7 +87,6 @@ def warmup_rag():
     if RAG_WARMED:
         return
     try:
-        from core.rag import get_rag_service, get_document_count
         rag_service = get_rag_service()
         doc_count = get_document_count()
         logger.info(f"RAG服务预热完成，向量库文档数量: {doc_count}")
@@ -402,7 +413,6 @@ async def update_config(req: UpdateConfigRequest):
 async def rag_status():
     """查询RAG向量库状态"""
     try:
-        from core.rag import get_vector_store_status, get_document_count
         status = get_vector_store_status()
         return {"status": "success", **status}
     except Exception as e:
@@ -418,7 +428,6 @@ async def rebuild_rag_index(force: bool = True):
     - force=False: 仅在向量库为空时构建
     """
     try:
-        from core.rag import reset_rag_service, get_rag_service, reload_rag_config, get_document_count
         reload_rag_config()
         reset_rag_service()
         rag_service = get_rag_service(force_rebuild=force)
@@ -436,7 +445,6 @@ async def rebuild_rag_index(force: bool = True):
 async def clear_rag_index():
     """清空RAG向量库"""
     try:
-        from core.rag import clear_vector_store, reset_rag_service, reset_decider
         clear_vector_store()
         reset_rag_service()
         reset_decider()
@@ -453,7 +461,6 @@ async def clear_rag_index():
 async def rag_search(q: str, top_k: int = 3):
     """RAG检索测试接口"""
     try:
-        from core.rag import retrieve_with_answers, should_use_rag
         if not q:
             return {"error": "请提供查询参数 q"}
         should_use = should_use_rag(q)
@@ -473,7 +480,6 @@ async def rag_search(q: str, top_k: int = 3):
 async def rag_decider_test(q: str):
     """测试RAG触发判断"""
     try:
-        from core.rag import should_use_rag, get_rag_decider
         decider = get_rag_decider()
         should_use = should_use_rag(q)
         reason = decider.get_match_reason(q)

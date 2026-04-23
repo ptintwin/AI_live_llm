@@ -22,6 +22,7 @@ tts:
   speech_rate: 1.2
   pitch_rate: 1.0
   stream: true
+  audio_mode: "pyaudio"  # websocket: 通过WebSocket推送到前端; pyaudio: 服务端直接播放
 
 # 直播工程配置
 live:
