@@ -253,7 +253,7 @@ class TTSLiveService:
         if self.consumer_task is None or self.consumer_task.done():
             await self.start_streaming()
             self.consumer_task = asyncio.create_task(self._process_queue())
-            asyncio.create_task(self._check_connection_health())
+            # asyncio.create_task(self._check_connection_health()) 移除，避免不必要的资源消耗和竞争
             logger.info(f"会话{self.session_id}TTS队列消费者和健康检查已启动")
 
     def add_to_danmu_queue(self, sentence: str, level: str = "normal"):
@@ -441,9 +441,6 @@ class TTSLiveService:
         self.tts_speech_rate = float(profile.get("speechRate") or config["tts"]["speech_rate"])
         self.tts_pitch_rate = float(profile.get("pitchRate") or config["tts"]["pitch_rate"])
         self._config_dirty = True
-        # 变量已同步更新；若当前无播报则立即关闭旧会话，下一句重建时应用新音色/语速
-        if self.synthesizer and not (self.callback and self.callback.playing):
-            self._close_synthesizer()
         logger.info(
             f"会话{self.session_id}切换到 profile[{index}]（下一句生效）: "
             f"{prev} -> (voice={self.tts_voice_id}, rate={self.tts_speech_rate}, pitch={self.tts_pitch_rate})"
@@ -463,13 +460,10 @@ class TTSLiveService:
             self.tts_speech_rate = float(profile.get("speechRate") or config["tts"]["speech_rate"])
             self.tts_pitch_rate = float(profile.get("pitchRate") or config["tts"]["pitch_rate"])
         else:
-            # 未命中 profile：rate/pitch 回落到全局默认，避免沿用旧值造成"音色变了语速不变"
             self.tts_speech_rate = float(config["tts"]["speech_rate"])
             self.tts_pitch_rate = float(config["tts"]["pitch_rate"])
 
         self._config_dirty = True
-        if self.synthesizer and not (self.callback and self.callback.playing):
-            self._close_synthesizer()
         logger.info(
             f"会话{self.session_id}切换音色（下一句生效）: "
             f"{prev} -> (voice={self.tts_voice_id}, rate={self.tts_speech_rate}, pitch={self.tts_pitch_rate}) "

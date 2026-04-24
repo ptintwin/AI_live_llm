@@ -88,7 +88,7 @@ async def test_live_danmu():
         },
         {
             "username": "玩家3",
-            "content": "游戏活动什么时候结束？",  # 游戏相关普通问题（重要）
+            "content": "游戏内一天能赚多少钱？",  # 游戏相关普通问题（重要）
             "type": "question",
             "danmu_time": danmu_times[2]
         },
@@ -110,8 +110,8 @@ async def test_live_danmu():
     await send_danmu_request(session_id, first_danmu_list, 1)
 
     # 等待3秒钟
-    print("等待3秒钟...")
-    await asyncio.sleep(3)
+    print("等待10秒钟...")
+    await asyncio.sleep(10)
 
     # 第二次请求：弹幕最高等级为"非常重要"类，弹幕数3条
     # 非常重要类包括：充值类问题、下载类问题
