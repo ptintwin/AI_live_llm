@@ -66,6 +66,7 @@ class TTSLiveService:
         self.normal_queue = asyncio.Queue()
         self.loop_queue = asyncio.Queue()
         self.transitional_sentence = ""
+        self._transitional_lock = asyncio.Lock()
         self.consumer_task = None
 
     def _init_synthesizer(self):
@@ -133,8 +134,7 @@ class TTSLiveService:
                 sentence = await self.mandatory_queue.get()
                 logger.info(f"当前队列大小: {self.mandatory_queue.qsize()}，【必播句】tts播报句子内容: {sentence}")
             elif self.transitional_sentence:
-                sentence = self.transitional_sentence
-                self.transitional_sentence = ""
+                sentence = await self.get_transitional_sentence()
                 logger.info(f"【重要过渡句】tts播报句子内容: {sentence}")
             elif not self.important_queue.empty():
                 sentence = await self.important_queue.get()
@@ -272,6 +272,18 @@ class TTSLiveService:
             else:
                 self.normal_queue.put_nowait(sentence)
                 logger.info(f"推送一般句队列成功，当前队列大小: {self.normal_queue.qsize()}")
+
+    async def set_transitional_sentence(self, sentence: str):
+        """设置过渡句子（带锁保护，防止覆盖）"""
+        async with self._transitional_lock:
+            self.transitional_sentence = sentence
+
+    async def get_transitional_sentence(self) -> str:
+        """获取并清除过渡句子（带锁保护）"""
+        async with self._transitional_lock:
+            sentence = self.transitional_sentence
+            self.transitional_sentence = ""
+            return sentence
 
     def add_to_loop_queue(self, sentence: str, cycle_count: int):
         """添加文本到循环播报队列

@@ -343,8 +343,9 @@ class DanmuService:
             elif not tts.important_queue.empty():
                 logger.info(f"重要句队列不为空，先取出一个作为过渡句子，然后处理清空以下列：" + _interact_Qsize)
                 try:
-                    tts.transitional_sentence = tts.important_queue.get_nowait()
-                    logger.info(f"从tts.important_queue取出并赋值过渡句子成功: {tts.transitional_sentence}")
+                    transitional = tts.important_queue.get_nowait()
+                    await tts.set_transitional_sentence(transitional)
+                    logger.info(f"从tts.important_queue取出并赋值过渡句子成功: {transitional}")
                 except asyncio.QueueEmpty:
                     pass
         elif max_level == "normal":
