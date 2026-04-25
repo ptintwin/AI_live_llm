@@ -9,6 +9,7 @@ import traceback
 from dashscope.audio.tts_v2 import SpeechSynthesizer, AudioFormat
 from yaml import safe_load
 from config.prompts import TTS_INSTRUCTION
+from utils.common import pick_float, pick_str
 from utils.logger import logger
 from core.tts_callbacks import WebsocketTTSStreamCallback, PyAudioTTSStreamCallback
 
@@ -36,16 +37,23 @@ class TTSLiveService:
         rc = room_config or {}
         self.session_id = session_id
         self.tts_enabled = True
-        self.tts_model_name = rc.get("ttsModelName") or config["tts"]["model_name"]
+        # §八.4.3 重构后，room_config 来自 Spring EffectiveConfigService，已完成所有合并。
+        # 这里**不再**用 `or config["tts"][...]` 兜底（会覆盖用户在直播间/全局配置里的显式设置，
+        # 即原 Bug-2）；仅在 rc 完全缺字段或 Spring 不可达时使用 config.yaml 作为最后兜底。
+        self.tts_model_name = pick_str(rc, "ttsModelName", config["tts"]["model_name"])
         self.tts_profiles = rc.get("ttsProfiles") or []
         self.current_profile_index = 0
         first = self.tts_profiles[0] if self.tts_profiles else {}
-        self.tts_voice_id = first.get("voiceId") or config["tts"]["voice_id"]
-        self.tts_speech_rate = float(first.get("speechRate") or config["tts"]["speech_rate"])
-        self.tts_pitch_rate = float(first.get("pitchRate") or config["tts"]["pitch_rate"])
-        self.tts_instruction = rc.get("ttsInstruction") or TTS_INSTRUCTION
+        self.tts_voice_id = pick_str(first, "voiceId", config["tts"]["voice_id"])
+        self.tts_speech_rate = pick_float(first, "speechRate", config["tts"]["speech_rate"])
+        self.tts_pitch_rate = pick_float(first, "pitchRate", config["tts"]["pitch_rate"])
+        self.tts_instruction = pick_str(rc, "ttsInstruction", TTS_INSTRUCTION)
         self.audio_broadcast_fn = audio_broadcast_fn
         self.audio_mode = rc.get("audioMode") or config["tts"].get("audio_mode", "websocket")
+        # §四.2 Bug-8：播放超时上限配置化，不再写死 300s
+        self.playback_timeout_cap = float(
+            config["tts"].get("playback_timeout_cap", 300.0)
+        )
 
         try:
             self._main_loop = asyncio.get_running_loop()
@@ -192,13 +200,18 @@ class TTSLiveService:
                         await self.start_streaming()
                         continue
 
+                    # §十三 Fix A 配套：streaming_complete 返回时上游 PCM 已全部回调到 on_data，
+                    # 但 run_coroutine_threadsafe 调度的 audio_broadcast 协程可能仍在 ready 队列里。
+                    # 让出一小段时间让所有 broadcast 真实 send_bytes 完成，避免下一句 WS 握手
+                    # 抢占主循环导致前一句尾部 PCM 被延后送达浏览器。
+                    await asyncio.sleep(0.1)
                     self.synthesizer = None
 
                     est_playback = max(
                         15.0,
                         self.callback.total_bytes_received / _PCM_BYTES_PER_SEC + 10.0,
                     )
-                    wait_cap = min(300.0, est_playback)
+                    wait_cap = min(self.playback_timeout_cap, est_playback)
                     try:
                         await asyncio.wait_for(self.callback.play_completed.wait(), timeout=wait_cap)
                         if self.callback.has_error:
@@ -403,7 +416,12 @@ class TTSLiveService:
         logger.info(f"会话{self.session_id}TTS服务已关闭")
 
     def update_config(self, room_config: dict):
-        """更新服务配置（保留当前激活的 profile 索引，不重置语速/音调）
+        """更新服务配置（保留当前激活的 profile 索引，不重置语速/音调）。
+
+        §八.4.3 重构说明：room_config 来自 Spring EffectiveConfigService，已合并完毕。
+        原 Bug-2 的回落链 ``active.get("speechRate") or config["tts"]["speech_rate"]``
+        在用户显式把 speechRate 设为 0 / None 时会错误覆盖，现改为"仅当 active 根本没有该键
+        且值为 None 时才用 config.yaml 兜底"。
 
         Args:
             room_config: 新的直播间配置
@@ -411,14 +429,19 @@ class TTSLiveService:
         prev = (self.tts_voice_id, self.tts_speech_rate, self.tts_pitch_rate)
         rc = room_config or {}
         self.tts_enabled = True
-        self.tts_model_name = rc.get("ttsModelName") or config["tts"]["model_name"]
+        self.tts_model_name = pick_str(rc, "ttsModelName", config["tts"]["model_name"])
         self.tts_profiles = rc.get("ttsProfiles") or []
-        idx = self.current_profile_index if self.current_profile_index < len(self.tts_profiles) else 0
+        # §四 Bug-2 配套：profiles 长度变化时 clip 索引，避免越界或回到 0 造成"音色突变"
+        if self.tts_profiles:
+            self.current_profile_index = max(0, min(self.current_profile_index, len(self.tts_profiles) - 1))
+        else:
+            self.current_profile_index = 0
+        idx = self.current_profile_index
         active = self.tts_profiles[idx] if self.tts_profiles else {}
-        self.tts_voice_id = active.get("voiceId") or config["tts"]["voice_id"]
-        self.tts_speech_rate = float(active.get("speechRate") or config["tts"]["speech_rate"])
-        self.tts_pitch_rate = float(active.get("pitchRate") or config["tts"]["pitch_rate"])
-        self.tts_instruction = rc.get("ttsInstruction") or TTS_INSTRUCTION
+        self.tts_voice_id = pick_str(active, "voiceId", config["tts"]["voice_id"])
+        self.tts_speech_rate = pick_float(active, "speechRate", config["tts"]["speech_rate"])
+        self.tts_pitch_rate = pick_float(active, "pitchRate", config["tts"]["pitch_rate"])
+        self.tts_instruction = pick_str(rc, "ttsInstruction", TTS_INSTRUCTION)
 
         self._config_dirty = True
         if self.synthesizer and not (self.callback and self.callback.playing):
@@ -437,9 +460,10 @@ class TTSLiveService:
         prev = (self.tts_voice_id, self.tts_speech_rate, self.tts_pitch_rate)
         profile = self.tts_profiles[index]
         self.current_profile_index = index
-        self.tts_voice_id = profile.get("voiceId") or config["tts"]["voice_id"]
-        self.tts_speech_rate = float(profile.get("speechRate") or config["tts"]["speech_rate"])
-        self.tts_pitch_rate = float(profile.get("pitchRate") or config["tts"]["pitch_rate"])
+        # 与 update_config 同理：不再用 "or default"，区分"显式 None"与"缺字段"
+        self.tts_voice_id = pick_str(profile, "voiceId", config["tts"]["voice_id"])
+        self.tts_speech_rate = pick_float(profile, "speechRate", config["tts"]["speech_rate"])
+        self.tts_pitch_rate = pick_float(profile, "pitchRate", config["tts"]["pitch_rate"])
         self._config_dirty = True
         # 变量已同步更新；若当前无播报则立即关闭旧会话，下一句重建时应用新音色/语速
         if self.synthesizer and not (self.callback and self.callback.playing):
@@ -460,8 +484,8 @@ class TTSLiveService:
         if profile:
             idx = self.tts_profiles.index(profile)
             self.current_profile_index = idx
-            self.tts_speech_rate = float(profile.get("speechRate") or config["tts"]["speech_rate"])
-            self.tts_pitch_rate = float(profile.get("pitchRate") or config["tts"]["pitch_rate"])
+            self.tts_speech_rate = pick_float(profile, "speechRate", config["tts"]["speech_rate"])
+            self.tts_pitch_rate = pick_float(profile, "pitchRate", config["tts"]["pitch_rate"])
         else:
             # 未命中 profile：rate/pitch 回落到全局默认，避免沿用旧值造成"音色变了语速不变"
             self.tts_speech_rate = float(config["tts"]["speech_rate"])

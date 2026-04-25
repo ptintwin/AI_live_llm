@@ -2,8 +2,8 @@
 """
 数据模型定义
 """
-from pydantic import BaseModel, Field
-from typing import Optional
+from pydantic import BaseModel, Field, field_validator
+from typing import Optional, Union
 
 
 class DanmuItem(BaseModel):
@@ -15,8 +15,14 @@ class DanmuItem(BaseModel):
 
 
 class StartStreamRequest(BaseModel):
+    # Spring 端 roomId 是 Long，序列化为 JSON number；前端则可能传 string。统一接收两种。
     room_id: str = Field(..., description="直播间ID（数据库内部ID）")
     session_id: str = Field("", description="前端传入的唯一session_id")
+
+    @field_validator("room_id", mode="before")
+    @classmethod
+    def _coerce_room_id(cls, v):
+        return str(v) if v is not None else v
 
 
 class LiveDanmuRequest(BaseModel):
@@ -59,3 +65,8 @@ class DanmuLevelRequest(BaseModel):
 class UpdateConfigRequest(BaseModel):
     room_id: str = Field(..., description="直播间ID（数据库内部ID）")
     session_id: str = Field(..., description="直播间唯一会话ID")
+
+    @field_validator("room_id", mode="before")
+    @classmethod
+    def _coerce_room_id(cls, v):
+        return str(v) if v is not None else v

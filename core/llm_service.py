@@ -13,6 +13,7 @@ from typing import AsyncGenerator, Any
 from dashscope.aigc.generation import AioGeneration
 from yaml import safe_load
 from config.prompts import SYSTEM_PROMPT, CURRENT_LIVE_ROOM_PROMPT, CONTINUE_PROMPT, INTERACT_PROMPT, DANMU_LEVEL_PROMPT
+from utils.common import pick_str, pick_float, pick_int
 from utils.logger import logger
 from core.rag import get_rag_service, get_rag_config
 
@@ -39,18 +40,20 @@ class LLMLiveService:
         self.cycle_count = 0
         self.user_focus_cycle = 0
 
-        # 运行时参数：房间配置优先，回退 config.yaml
-        self.model_name = rc.get("modelName") or config["llm"]["model_name"]
-        self.temperature = float(rc.get("temperature") or config["llm"]["temperature"])
-        self.max_history = int(rc.get("maxHistory") or config["llm"]["max_history"])
-        self.max_cycle_focus = int(rc.get("maxCycleFocus") or config["live"]["max_cycle_focus"])
+        # §八.4.3 重构后，room_config 来自 Spring EffectiveConfigService，已完成所有合并。
+        # 这里不再用 `or default` 兜底（会把用户显式设为 0 / 0.0 / "" 的值误吞为 falsy，即原 Bug-2）；
+        # pick_* 助手区分"缺字段 / 显式 None / 合法 falsy"三种情况。
+        self.model_name = pick_str(rc, "modelName", config["llm"]["model_name"])
+        self.temperature = pick_float(rc, "temperature", config["llm"]["temperature"])
+        self.max_history = pick_int(rc, "maxHistory", config["llm"]["max_history"])
+        self.max_cycle_focus = pick_int(rc, "maxCycleFocus", config["live"]["max_cycle_focus"])
 
         # Prompt 模板：房间配置优先，回退 prompts.py 默认值
-        system_prompt    = rc.get("systemPrompt")    or SYSTEM_PROMPT
-        live_background  = rc.get("liveBackground")  or CURRENT_LIVE_ROOM_PROMPT
-        self.continue_prompt     = rc.get("continuePrompt")    or CONTINUE_PROMPT
-        self.interact_prompt     = rc.get("interactPrompt")    or INTERACT_PROMPT
-        self.danmu_level_prompt  = rc.get("danmuLevelPrompt")  or DANMU_LEVEL_PROMPT
+        system_prompt    = pick_str(rc, "systemPrompt",   SYSTEM_PROMPT)
+        live_background  = pick_str(rc, "liveBackground", CURRENT_LIVE_ROOM_PROMPT)
+        self.continue_prompt    = pick_str(rc, "continuePrompt",   CONTINUE_PROMPT)
+        self.interact_prompt    = pick_str(rc, "interactPrompt",   INTERACT_PROMPT)
+        self.danmu_level_prompt = pick_str(rc, "danmuLevelPrompt", DANMU_LEVEL_PROMPT)
 
         self.fixed_prefix_history = [
             {
@@ -316,18 +319,17 @@ class LLMLiveService:
             room_config: 新的直播间配置
         """
         rc = room_config or {}
-        # 更新运行时参数：房间配置优先，回退 config.yaml
-        self.model_name = rc.get("modelName") or config["llm"]["model_name"]
-        self.temperature = float(rc.get("temperature") or config["llm"]["temperature"])
-        self.max_history = int(rc.get("maxHistory") or config["llm"]["max_history"])
-        self.max_cycle_focus = int(rc.get("maxCycleFocus") or config["live"]["max_cycle_focus"])
+        # 同 __init__：使用 pick_* 助手而不是 `or default`，避免把用户显式设的 0 误吞
+        self.model_name = pick_str(rc, "modelName", config["llm"]["model_name"])
+        self.temperature = pick_float(rc, "temperature", config["llm"]["temperature"])
+        self.max_history = pick_int(rc, "maxHistory", config["llm"]["max_history"])
+        self.max_cycle_focus = pick_int(rc, "maxCycleFocus", config["live"]["max_cycle_focus"])
 
-        # 更新Prompt模板：房间配置优先，回退 prompts.py 默认值
-        system_prompt    = rc.get("systemPrompt")    or SYSTEM_PROMPT
-        live_background  = rc.get("liveBackground")  or CURRENT_LIVE_ROOM_PROMPT
-        self.continue_prompt     = rc.get("continuePrompt")    or CONTINUE_PROMPT
-        self.interact_prompt     = rc.get("interactPrompt")    or INTERACT_PROMPT
-        self.danmu_level_prompt  = rc.get("danmuLevelPrompt")  or DANMU_LEVEL_PROMPT
+        system_prompt    = pick_str(rc, "systemPrompt",   SYSTEM_PROMPT)
+        live_background  = pick_str(rc, "liveBackground", CURRENT_LIVE_ROOM_PROMPT)
+        self.continue_prompt    = pick_str(rc, "continuePrompt",   CONTINUE_PROMPT)
+        self.interact_prompt    = pick_str(rc, "interactPrompt",   INTERACT_PROMPT)
+        self.danmu_level_prompt = pick_str(rc, "danmuLevelPrompt", DANMU_LEVEL_PROMPT)
 
         # 更新固定前缀历史
         self.fixed_prefix_history = [

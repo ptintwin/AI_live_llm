@@ -11,7 +11,7 @@ import uuid
 from contextlib import asynccontextmanager
 from datetime import datetime
 from typing import Optional
-from fastapi import FastAPI, BackgroundTasks, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, BackgroundTasks, WebSocket, WebSocketDisconnect, UploadFile, File, Form
 import uvicorn
 from yaml import safe_load
 from core.models import (
@@ -33,6 +33,7 @@ from utils.dashscope_runtime import (
 )
 from utils.spring_llm_config import (
     fetch_global_llm_settings,
+    fetch_knowledge_qa_text,
     resolve_room_llm_config,
 )
 from core.rag import (
@@ -41,11 +42,16 @@ from core.rag import (
     get_vector_store_status,
     reset_rag_service,
     reload_rag_config,
+    reload_rag_config_async,
+    load_rag_config_async,
+    get_rag_config,
     clear_vector_store,
     reset_decider,
     retrieve_with_answers,
     should_use_rag,
     get_rag_decider,
+    reset_embedding_model,
+    reset_reranker_model,
 )
 
 # 加载服务配置
@@ -56,13 +62,21 @@ with open("./config/config.yaml", "r", encoding="utf-8") as f:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """应用生命周期管理"""
-    startup()
+    await startup()
     yield
     shutdown()
 
 
-def startup():
-    """应用启动时执行"""
+async def startup():
+    """应用启动时执行。
+
+    §十二：先从 Spring 拉 cfg_rag（若可达）以让 embedding_model_path 等运行态值生效；
+    随后预热 RAG 服务（此时加载的模型路径已是 Spring 回的最新值）。
+    """
+    try:
+        await load_rag_config_async()
+    except Exception as e:
+        logger.warning(f"启动时拉取 Spring RAG 配置失败，将使用本地 YAML 兜底：{e}")
     warmup_rag()
 
 
@@ -113,7 +127,7 @@ async def health_check():
 
 @app.websocket("/ws/audio/{session_id}")
 async def audio_ws(websocket: WebSocket, session_id: str):
-    """前端音频 WebSocket 连接 — 接收 TTS 生成的 PCM 音频流"""
+    """前端音频 WebSocket 连接 — 接收 TTS 生成的 PCM 音频流。LAN 部署，无鉴权。"""
     await websocket.accept()
     if session_id not in AUDIO_CLIENTS:
         AUDIO_CLIENTS[session_id] = set()
@@ -155,10 +169,17 @@ async def start_stream(req: StartStreamRequest, background_tasks: BackgroundTask
     # 音频广播函数：将 PCM 数据推送给所有已连接的前端 WS 客户端
     async def audio_broadcast(data: bytes):
         clients = list(AUDIO_CLIENTS.get(session_id, set()))
+        if not clients:
+            # 若已无前端连接，向上层提示（避免出现"Python 一直发但无人听"的静默故障）
+            logger.debug(f"会话{session_id} audio_broadcast 无活跃 WS 客户端，丢弃 {len(data)} 字节")
+            return
         for ws in clients:
             try:
                 await ws.send_bytes(data)
-            except Exception:
+            except Exception as e:
+                logger.warning(
+                    f"会话{session_id} 音频 WS 发送失败已剔除客户端 ({len(data)} 字节, {type(e).__name__}: {e})"
+                )
                 AUDIO_CLIENTS.get(session_id, set()).discard(ws)
 
     # 初始化核心服务（使用直播间专属配置）
@@ -171,7 +192,8 @@ async def start_stream(req: StartStreamRequest, background_tasks: BackgroundTask
             # 启动TTS消费者任务
             if tts_service.tts_enabled:
                 await tts_service.start_consumer()
-                await asyncio.sleep(1.0)
+                # §十三 Fix C：原 1s 保守延迟无意义（start_consumer 已 await），降到 100ms
+                await asyncio.sleep(0.1)
 
             while session_id in SESSIONS:
                 if llm_service.loop_interrupt_flag:
@@ -213,19 +235,17 @@ async def start_stream(req: StartStreamRequest, background_tasks: BackgroundTask
     async def danmu_processing_loop():
         try:
             while session_id in SESSIONS:
-                # 检查danmu_cache是否有内容
+                # §四.2 Bug-5：原 "check → release → reacquire → drain" 两阶段加锁在
+                # 窗口内若有新弹幕入队，会把中断机会错过。改为单次持锁完成 check+drain。
+                danmu_cache = []
                 async with SESSIONS[session_id]["danmu_lock"]:
-                    has_danmu = len(SESSIONS[session_id]["danmu_cache"]) > 0
-
-                if has_danmu:
-                    # 中断live_loop
-                    llm_service.set_loop_interrupt(True)
-
-                    # 拷贝并清空danmu_cache
-                    async with SESSIONS[session_id]["danmu_lock"]:
-                        danmu_cache = SESSIONS[session_id]["danmu_cache"].copy()
+                    if SESSIONS[session_id]["danmu_cache"]:
+                        danmu_cache = SESSIONS[session_id]["danmu_cache"]
                         SESSIONS[session_id]["danmu_cache"] = []
 
+                if danmu_cache:
+                    # 原子地拿到一批后再触发中断；中断信号对 live_loop 是幂等的
+                    llm_service.set_loop_interrupt(True)
                     logger.info(f"会话{session_id}开始处理{len(danmu_cache)}条弹幕缓存：{danmu_cache}")
 
                     max_level = DanmuService.get_max_level(danmu_cache)
@@ -326,11 +346,25 @@ async def stop_session(req: StopSessionRequest):
     if not session:
         return {"error": "会话不存在"}
 
-    # 清理资源
-    session["task"].cancel()
-    if "danmu_task" in session:
-        session["danmu_task"].cancel()
-    session["tts"].close()
+    # §四.2 Bug-6：取消任务后必须 await，否则资源（DashScope ws、缓冲区等）释放不及时。
+    tasks_to_cancel = []
+    main_task = session.get("task")
+    if main_task:
+        main_task.cancel()
+        tasks_to_cancel.append(main_task)
+    danmu_task = session.get("danmu_task")
+    if danmu_task:
+        danmu_task.cancel()
+        tasks_to_cancel.append(danmu_task)
+    if tasks_to_cancel:
+        # return_exceptions=True 吸收 CancelledError，避免被 FastAPI 包装成 500
+        await asyncio.gather(*tasks_to_cancel, return_exceptions=True)
+
+    try:
+        session["tts"].close()
+    except Exception:
+        logger.warning(f"会话{req.session_id} TTS 关闭异常", exc_info=True)
+
     # 关闭音频 WS 客户端
     for ws in list(AUDIO_CLIENTS.pop(req.session_id, set())):
         try:
@@ -428,8 +462,11 @@ async def rebuild_rag_index(force: bool = True):
     - force=False: 仅在向量库为空时构建
     """
     try:
-        reload_rag_config()
+        # §十二：先从 Spring 拉最新 cfg_rag；失败自动降级到 YAML
+        await reload_rag_config_async()
         reset_rag_service()
+        reset_embedding_model()
+        reset_reranker_model()
         rag_service = get_rag_service(force_rebuild=force)
         doc_count = get_document_count()
         global RAG_WARMED
@@ -474,6 +511,109 @@ async def rag_search(q: str, top_k: int = 3):
     except Exception as e:
         logger.error(f"RAG检索失败: {e}")
         return {"error": str(e), "status": "failed"}
+
+
+@app.post("/rag/upload_qa", summary="[Deprecated] 上传 QA 文本并可选触发重建", deprecated=True)
+async def rag_upload_qa(
+    content: Optional[str] = Form(None),
+    file: Optional[UploadFile] = File(None),
+    rebuild: bool = Form(True),
+):
+    """@deprecated §十二.7 改为 Pull 模型 —— Python 通过 GET /api/knowledge/qa-export 主动拉取，
+    不再接受 Java 主动推送。保留 2 个版本兼容旧调用方，之后删除。
+
+    新链路：调用方请改用 POST /reload_rag_config?rebuild=true[&room_id=X]。
+    """
+    logger.warning("/rag/upload_qa 已弃用（§十二.7）；请改用 /reload_rag_config?rebuild=true&room_id=X")
+    try:
+        rag_cfg = config.get("rag") or {}
+        docs_path = rag_cfg.get("docs_path", "docs/organized_Q&A.txt")
+        abs_path = docs_path if os.path.isabs(docs_path) else os.path.join(os.getcwd(), docs_path)
+        os.makedirs(os.path.dirname(abs_path), exist_ok=True)
+
+        if file is not None:
+            data = await file.read()
+            try:
+                text = data.decode("utf-8")
+            except UnicodeDecodeError:
+                text = data.decode("utf-8", errors="replace")
+        elif content is not None:
+            text = content
+        else:
+            return {"status": "failed", "error": "content 或 file 必须提供其一"}
+
+        with open(abs_path, "w", encoding="utf-8") as f:
+            f.write(text)
+        logger.info(f"QA 文档已写入 {abs_path}，长度 {len(text)} 字符")
+
+        if rebuild:
+            await reload_rag_config_async()
+            reset_rag_service()
+            rag_service = get_rag_service(force_rebuild=True)
+            doc_count = get_document_count()
+            global RAG_WARMED
+            RAG_WARMED = True
+            return {"status": "success", "path": abs_path, "bytes": len(text), "document_count": doc_count, "deprecated": True}
+        return {"status": "success", "path": abs_path, "bytes": len(text), "deprecated": True}
+    except Exception as e:
+        logger.error(f"上传 QA 文档失败: {traceback.format_exc()}")
+        return {"status": "failed", "error": str(e)}
+
+
+@app.post("/reload_rag_config", summary="热加载 RAG 配置，可选从 Spring 拉最新 QA 并重建")
+async def reload_rag_config_endpoint(
+    rebuild: bool = False,
+    room_id: Optional[str] = None,
+    room_name: Optional[str] = None,
+):
+    """§十二.7：RAG 配置/数据的统一刷新入口（Pull 模型）。
+
+    - rebuild=False：仅热加载配置，不写文件、不重建向量库。
+    - rebuild=True + room_id=None：拉全局 QA → 写 docs/organized_Q&A.txt → 重建向量库。
+    - rebuild=True + room_id=X + room_name=Y：拉专属 QA → 写 docs/Y-organized_Q&A.txt → 重建向量库。
+    """
+    try:
+        cfg = await reload_rag_config_async()
+        reset_decider()
+        reset_rag_service()
+        reset_embedding_model()
+        reset_reranker_model()
+        logger.info(f"RAG 配置已热加载（rebuild={rebuild}, room_id={room_id}, room_name={room_name}）")
+
+        if not rebuild:
+            return {"status": "success", "rebuilt": False}
+
+        # 确定目标文件路径
+        base_docs = os.path.join(os.path.dirname(os.path.abspath(__file__)), "docs")
+        if room_id and room_name:
+            # 专属知识库 → docs/{room_name}-organized_Q&A.txt
+            docs_path = os.path.join(base_docs, f"{room_name}-organized_Q&A.txt")
+        else:
+            # 全局知识库 → docs/organized_Q&A.txt
+            global_path = cfg.get("docs_path") or get_rag_config().get("docs_path")
+            docs_path = global_path if global_path else os.path.join(base_docs, "organized_Q&A.txt")
+
+        # Pull QA 文本 → 落盘
+        text = await fetch_knowledge_qa_text(room_id)
+        os.makedirs(os.path.dirname(docs_path), exist_ok=True)
+        with open(docs_path, "w", encoding="utf-8") as f:
+            f.write(text or "")
+        logger.info(f"QA 文档已写入 {docs_path}，长度 {len(text or '')} 字符（room_id={room_id}）")
+
+        rag_service = get_rag_service(force_rebuild=True)
+        doc_count = get_document_count()
+        global RAG_WARMED
+        RAG_WARMED = True
+        return {
+            "status": "success",
+            "rebuilt": True,
+            "path": docs_path,
+            "bytes": len(text or ""),
+            "document_count": doc_count,
+        }
+    except Exception as e:
+        logger.error(f"热加载/重建 RAG 失败: {traceback.format_exc()}")
+        return {"status": "failed", "error": str(e)}
 
 
 @app.get("/rag_decider_test", summary="RAG触发判断测试")

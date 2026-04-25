@@ -17,12 +17,17 @@ tts:
   enabled: true
   model_name: "cosyvoice-v3.5-plus"
   voice_id: "cosyvoice-v3.5-plus-myvoice-4b8964a1dc9a4a07bd6babf1c5db8fe3"
+  # §十三 Fix D：实际采样率由 AudioFormat.PCM_22050HZ_MONO_16BIT 硬编码为 22050Hz；
+  # 本字段仅 pyaudio 模式下的本地播放设备使用，websocket 模式下被浏览器 AudioContext 忽略
   sample_rate: 16000
   format: "wav"
   speech_rate: 1.2
   pitch_rate: 1.0
   stream: true
   audio_mode: "websocket"  # websocket: 通过WebSocket推送到前端; pyaudio: 服务端直接播放
+  # §四.2 Bug-8：单句 TTS 播报超时上限（秒）。
+  # 实际超时 = min(playback_timeout_cap, 估算播放时长)，估算由收到的 PCM 字节数推导。
+  playback_timeout_cap: 300.0
 
 # 直播工程配置
 live:
@@ -49,6 +54,7 @@ spring_boot:
   base_url: "http://localhost:8080"
 
 # RAG配置
+# §十二：运行态值由 Spring `/api/config/rag` 提供，此段仅作冷启动 / Spring 不可达时的兜底默认
 rag:
   enabled: true
   docs_path: "docs/organized_Q&A.txt"

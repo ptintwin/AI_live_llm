@@ -1,6 +1,12 @@
 from core.rag.service import RAGService, get_rag_service, reset_rag_service
 from core.rag.decider import RAGDecider, get_rag_decider, should_use_rag, reset_decider
-from core.rag.config import get_rag_config, load_rag_config, reload_rag_config
+from core.rag.config import (
+    get_rag_config,
+    load_rag_config,
+    load_rag_config_async,
+    reload_rag_config,
+    reload_rag_config_async,
+)
 from core.rag.vector_store import (
     init_vector_store,
     add_documents,
@@ -29,7 +35,9 @@ __all__ = [
     "reset_decider",
     "get_rag_config",
     "load_rag_config",
+    "load_rag_config_async",
     "reload_rag_config",
+    "reload_rag_config_async",
     "init_vector_store",
     "add_documents",
     "get_document_count",
