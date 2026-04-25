@@ -8,7 +8,7 @@ import asyncio
 from datetime import datetime
 from yaml import safe_load
 from utils.logger import logger
-from utils.common import timer
+from utils.common import timer, pick_str, pick_int, pick_bool
 from config.prompts import DANMU_LEVEL_PROMPT
 from dashscope.aigc.generation import AioGeneration
 from core.models import DanmuItem
@@ -23,13 +23,12 @@ class DanmuService:
 
     def __init__(self, room_config: dict = None):
         rc = room_config or {}
-        self.model_name = rc.get("modelName") or config["llm"]["model_name"]
-        self.danmu_level_prompt = rc.get("danmuLevelPrompt") or DANMU_LEVEL_PROMPT
-        self.tts_enabled = rc.get("ttsEnabled")
-        if self.tts_enabled is None:
-            self.tts_enabled = config["tts"]["enabled"]
-        self.danmu_max_seconds = int(rc.get("danmuCacheMaxSeconds") or config["live"]["danmu_cache"]["max_seconds"])
-        self.danmu_max_nums = int(rc.get("danmuCacheMaxNums") or config["live"]["danmu_cache"]["max_nums"])
+        # §八.4.3：room_config 来自 Spring 合并好的 effective-config；不再用 `or default` 兜底
+        self.model_name = pick_str(rc, "modelName", config["llm"]["model_name"])
+        self.danmu_level_prompt = pick_str(rc, "danmuLevelPrompt", DANMU_LEVEL_PROMPT)
+        self.tts_enabled = pick_bool(rc, "ttsEnabled", config["tts"]["enabled"])
+        self.danmu_max_seconds = pick_int(rc, "danmuCacheMaxSeconds", config["live"]["danmu_cache"]["max_seconds"])
+        self.danmu_max_nums = pick_int(rc, "danmuCacheMaxNums", config["live"]["danmu_cache"]["max_nums"])
 
     @timer
     async def identify_levels(self, contents: list) -> list:
@@ -385,13 +384,10 @@ class DanmuService:
             room_config: 新的直播间配置
         """
         rc = room_config or {}
-        # 更新配置
-        self.model_name = rc.get("modelName") or config["llm"]["model_name"]
-        self.danmu_level_prompt = rc.get("danmuLevelPrompt") or DANMU_LEVEL_PROMPT
-        self.tts_enabled = rc.get("ttsEnabled")
-        if self.tts_enabled is None:
-            self.tts_enabled = config["tts"]["enabled"]
-        self.danmu_max_seconds = int(rc.get("danmuCacheMaxSeconds") or config["live"]["danmu_cache"]["max_seconds"])
-        self.danmu_max_nums = int(rc.get("danmuCacheMaxNums") or config["live"]["danmu_cache"]["max_nums"])
+        self.model_name = pick_str(rc, "modelName", config["llm"]["model_name"])
+        self.danmu_level_prompt = pick_str(rc, "danmuLevelPrompt", DANMU_LEVEL_PROMPT)
+        self.tts_enabled = pick_bool(rc, "ttsEnabled", config["tts"]["enabled"])
+        self.danmu_max_seconds = pick_int(rc, "danmuCacheMaxSeconds", config["live"]["danmu_cache"]["max_seconds"])
+        self.danmu_max_nums = pick_int(rc, "danmuCacheMaxNums", config["live"]["danmu_cache"]["max_nums"])
 
         logger.info(f"DanmuService配置已更新")

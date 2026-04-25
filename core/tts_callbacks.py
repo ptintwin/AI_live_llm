@@ -42,28 +42,22 @@ class WebsocketTTSStreamCallback(ResultCallback):
             logger.error("[TTS] on_data: 未绑定主事件循环，无法广播 PCM")
 
     def on_complete(self):
+        """§十三 Fix A：websocket 模式下音频已推给浏览器，浏览器会自行按时间轴排队播放；
+        生产侧不再"假睡"估算播放时长 —— 一收到上游完成信号就立刻 set_completed，
+        让下一句可以开始合成（消除句与句之间的估算等待 gap）。
+        """
         logger.info("[TTS] on_complete: 服务端通知合成完成！")
         self.has_error = False
-        duration = self.total_bytes_received / _PCM_BYTES_PER_SEC + 0.3
+        self.playing = False
         if self._complete_future and not self._complete_future.done():
             self._complete_future.cancel()
         self._complete_future = None
         if self._main_loop is not None:
-            self._complete_future = asyncio.run_coroutine_threadsafe(
-                self._delayed_complete(duration), self._main_loop
-            )
+            # 跨线程安全地 set()：回调常由 dashscope SDK 线程触发
+            self._main_loop.call_soon_threadsafe(self.play_completed.set)
         else:
             logger.error("[TTS] on_complete: 未绑定主事件循环")
             self.play_completed.set()
-
-    async def _delayed_complete(self, delay: float):
-        try:
-            await asyncio.sleep(delay)
-            self.playing = False
-            self.play_completed.set()
-            logger.info(f"[TTS] 估算播放完成（延迟 {delay:.2f}s）")
-        except asyncio.CancelledError:
-            pass
 
     def on_error(self, msg):
         logger.error(f"[TTS] on_error: {msg}")
