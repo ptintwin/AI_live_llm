@@ -192,7 +192,6 @@ async def start_stream(req: StartStreamRequest, background_tasks: BackgroundTask
             # 启动TTS消费者任务
             if tts_service.tts_enabled:
                 await tts_service.start_consumer()
-                # §十三 Fix C：原 1s 保守延迟无意义（start_consumer 已 await），降到 100ms
                 await asyncio.sleep(0.1)
 
             while session_id in SESSIONS:
@@ -319,8 +318,11 @@ async def switch_voice_role(req: SwitchVoiceRoleRequest):
     if not session:
         return {"error": "会话不存在"}
     try:
-        logger.info(f"会话: {req.session_id}开始执行音色切换，切换voice_id：{req.voice_id}")
-        session["tts"].switch_voice(req.voice_id)
+        logger.info(f"会话: {req.session_id}开始执行音色切换，voice_id={req.voice_id}, with_transition={req.with_transition}")
+        if req.with_transition:
+            await session["tts"].switch_voice_with_transition(voice_id=req.voice_id, profile_index=None)
+        else:
+            session["tts"].switch_voice(req.voice_id)
         logger.info(f"会话: {req.session_id}完成voice_id={req.voice_id}的音色切换")
     except Exception as e:
         logger.error(f"音色切换接口执行异常，error：{traceback.print_exc()}")
@@ -405,8 +407,11 @@ async def switch_voice_profile(req: SwitchVoiceProfileRequest):
     if not session:
         return {"error": "会话不存在"}
     try:
-        logger.info(f"会话{req.session_id}切换 profile 索引: {req.profile_index}")
-        session["tts"].switch_voice_by_profile(req.profile_index)
+        logger.info(f"会话{req.session_id}切换 profile 索引: {req.profile_index}, with_transition={req.with_transition}")
+        if req.with_transition:
+            await session["tts"].switch_voice_with_transition(voice_id=None, profile_index=req.profile_index)
+        else:
+            session["tts"].switch_voice_by_profile(req.profile_index)
     except Exception:
         logger.error(f"切换 profile 失败: {traceback.format_exc()}")
         return {"error": "切换失败"}

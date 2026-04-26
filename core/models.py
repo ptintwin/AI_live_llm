@@ -33,11 +33,13 @@ class LiveDanmuRequest(BaseModel):
 class SwitchVoiceRoleRequest(BaseModel):
     session_id: str = Field(..., description="直播间唯一会话ID")
     voice_id: str = Field(..., description="音色id")
+    with_transition: bool = Field(True, description="是否带过渡话切换（结束语->切换->开播语）")
 
 
 class SwitchVoiceProfileRequest(BaseModel):
     session_id: str = Field(..., description="直播间唯一会话ID")
     profile_index: int = Field(..., description="TTS profile 索引（0-based），Python 直接用索引取已解析的 DashScope voice ID")
+    with_transition: bool = Field(True, description="是否带过渡话切换（结束语->切换->开播语）")
 
 
 class StopSessionRequest(BaseModel):

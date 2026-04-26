@@ -32,7 +32,8 @@ def _filter_by_similarity(docs: List[Document], threshold: float) -> List[Docume
         if score >= threshold:
             filtered.append(doc)
         else:
-            logger.info(f"【RAG检索】由于文档相似度低于阈值{threshold}，被过滤掉文档：{doc}")
+            logger.info(f"【RAG检索】由于文档相似度低于阈值{threshold}，被过滤掉文档：question={doc.metadata['question']}, "
+                        f"similarity_score={doc.metadata['similarity_score']:.2f}")
 
     return filtered
 

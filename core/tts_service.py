@@ -5,10 +5,11 @@ CosyVoice流式TTS服务
 音频通过 WebSocket 流式传输到前端，不再使用 PyAudio 本地播放
 """
 import asyncio
+import random
 import traceback
 from dashscope.audio.tts_v2 import SpeechSynthesizer, AudioFormat
 from yaml import safe_load
-from config.prompts import TTS_INSTRUCTION
+from config.prompts import TTS_INSTRUCTION, END_LIVE_PROMPT, START_LIVE_PROMPT
 from utils.common import pick_float, pick_str
 from utils.logger import logger
 from core.tts_callbacks import WebsocketTTSStreamCallback, PyAudioTTSStreamCallback
@@ -75,6 +76,7 @@ class TTSLiveService:
         self.loop_queue = asyncio.Queue()
         self.transitional_sentence = ""
         self._transitional_lock = asyncio.Lock()
+        self._switch_lock = asyncio.Lock()
         self.consumer_task = None
 
     def _init_synthesizer(self):
@@ -138,21 +140,22 @@ class TTSLiveService:
         """处理队列中的文本，按优先级处理"""
         while True:
             # 按优先级检查队列
+            _tts_type = ""
             if not self.mandatory_queue.empty():
+                _tts_type = "必播句"
                 sentence = await self.mandatory_queue.get()
-                logger.info(f"当前队列大小: {self.mandatory_queue.qsize()}，【必播句】tts播报句子内容: {sentence}")
             elif self.transitional_sentence:
+                _tts_type = "重要过渡句"
                 sentence = await self.get_transitional_sentence()
-                logger.info(f"【重要过渡句】tts播报句子内容: {sentence}")
             elif not self.important_queue.empty():
+                _tts_type = "重要句"
                 sentence = await self.important_queue.get()
-                logger.info(f"当前队列大小: {self.important_queue.qsize()}，【重要句】tts播报句子内容: {sentence}")
             elif not self.normal_queue.empty():
+                _tts_type = "一般句"
                 sentence = await self.normal_queue.get()
-                logger.info(f"当前队列大小: {self.normal_queue.qsize()}，【一般句】tts播报句子内容: {sentence}")
             elif not self.loop_queue.empty():
+                _tts_type = "循环自主播报句"
                 sentence = await self.loop_queue.get()
-                logger.info(f"当前队列大小: {self.loop_queue.qsize()}，【循环播报】tts播报句子内容: {sentence}")
             else:
                 # 所有队列都为空，等待新任务
                 await asyncio.sleep(0.1)
@@ -177,8 +180,11 @@ class TTSLiveService:
             self.callback.reset()
 
             # 流式发送文本
-            logger.debug(f"发送文本块: {sentence[:20]}...")
             try:
+                logger.info(f"当前tts待播报队列句子数统计情况：必播句num={self.mandatory_queue.qsize()}, 有重要过渡句={1 if self.transitional_sentence else 0}, "
+                    f"重要句num={self.important_queue.qsize()}, 一般句num={self.normal_queue.qsize()}, "
+                    f"循环自主播报句num={self.loop_queue.qsize()}")
+                logger.info(f"【{_tts_type}】tts即将播报句子: {sentence}")
                 self.synthesizer.streaming_call(sentence)
 
                 if self.audio_mode == "pyaudio":
@@ -505,3 +511,70 @@ class TTSLiveService:
             f"{prev} -> (voice={self.tts_voice_id}, rate={self.tts_speech_rate}, pitch={self.tts_pitch_rate}) "
             f"profile_hit={profile is not None}"
         )
+
+    @staticmethod
+    def _parse_random_prompt(prompt_text: str) -> str:
+        """从多行话术字符串中解析并随机选择一句
+
+        Args:
+            prompt_text: 多行话术字符串，每行以【话术x】开头
+
+        Returns:
+            随机选择的一句去掉【话术x】标签后的纯话术文本
+        """
+        lines = prompt_text.strip().split('\n')
+        prompts = []
+        for line in lines:
+            line = line.strip()
+            if line:
+                if line.startswith('【话术'):
+                    prompt = line.split('】', 1)[1].strip()
+                    prompts.append(prompt)
+        return random.choice(prompts) if prompts else ""
+
+    async def switch_voice_with_transition(self, voice_id: str, profile_index: int = None):
+        """带过渡话的音色切换：清空队列 -> 结束语 -> 等待播完 -> 切换 -> 开播语
+
+        Args:
+            voice_id: 目标音色ID
+            profile_index: 目标profile索引（与voice_id二选一）
+        """
+        logger.info(f"会话{self.session_id}开始带过渡话的音色切换，voice_id={voice_id}, profile_index={profile_index}")
+
+        async with self._switch_lock:
+            while not self.mandatory_queue.empty():
+                try:
+                    self.mandatory_queue.get_nowait()
+                except asyncio.QueueEmpty:
+                    break
+
+            ending = self._parse_random_prompt(END_LIVE_PROMPT)
+            self.mandatory_queue.put_nowait(ending)
+            logger.info(f"会话{self.session_id}已添加结束语到队列: {ending}")
+
+            while not self.mandatory_queue.empty():
+                await asyncio.sleep(0.1)
+
+            if self.audio_mode == "pyaudio":
+                await self.callback.play_completed.wait()
+                self.callback.play_completed.clear()
+            else:
+                try:
+                    await asyncio.to_thread(
+                        self.synthesizer.streaming_complete,
+                        _TTS_STREAMING_COMPLETE_MS,
+                    )
+                except Exception as ce:
+                    logger.error(f"streaming_complete 失败: {ce}")
+                await asyncio.sleep(0.1)
+                await self.callback.play_completed.wait()
+                self.callback.play_completed.clear()
+
+        if profile_index is not None:
+            self.switch_voice_by_profile(profile_index)
+        elif voice_id:
+            self.switch_voice(voice_id)
+
+        opening = self._parse_random_prompt(START_LIVE_PROMPT)
+        self.mandatory_queue.put_nowait(opening)
+        logger.info(f"会话{self.session_id}已添加开播语到队列: {opening}")
