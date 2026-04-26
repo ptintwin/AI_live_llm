@@ -12,10 +12,12 @@ from yaml import safe_load
 
 from utils.logger import logger
 
+import os
+
 with open("./config/config.yaml", "r", encoding="utf-8") as f:
     _cfg = safe_load(f)
 
-SPRING_BASE_URL = _cfg["spring_boot"]["base_url"]
+SPRING_BASE_URL = os.getenv("SPRING_BOOT_URL") or _cfg["spring_boot"]["base_url"]
 
 
 async def fetch_effective_config(room_id: str) -> dict:

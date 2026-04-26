@@ -1,10 +1,17 @@
 # -*- coding: utf-8 -*-
-import pyaudio
 from utils.logger import logger
+
+# 懒加载 pyaudio（容器内 websocket 模式不需要，避免 import 崩溃）
+try:
+    import pyaudio as _pyaudio
+    _PYAUDIO_FORMAT = _pyaudio.paInt16
+except ImportError:
+    _pyaudio = None
+    _PYAUDIO_FORMAT = 8  # paInt16 的数值常量
 
 # 全局音频配置
 AUDIO_CONFIG = {
-    "format": pyaudio.paInt16,
+    "format": _PYAUDIO_FORMAT,
     "channels": 1,
     "rate": 22050,
     "output": True,
@@ -12,16 +19,18 @@ AUDIO_CONFIG = {
 }
 
 
-def get_pyaudio_instance() -> pyaudio.PyAudio:
-    """获取PyAudio单例"""
+def get_pyaudio_instance():
+    """获取PyAudio单例（仅 pyaudio 模式下调用）"""
+    if _pyaudio is None:
+        raise RuntimeError("pyaudio 未安装，请使用 websocket 音频模式（audio_mode: websocket）")
     try:
-        return pyaudio.PyAudio()
+        return _pyaudio.PyAudio()
     except Exception as e:
         logger.error(f"PyAudio初始化失败: {str(e)}")
         raise
 
 
-def close_audio_stream(p: pyaudio.PyAudio, stream):
+def close_audio_stream(p, stream):
     """安全关闭音频流"""
 
     def safe_operation(operation, error_msg):
