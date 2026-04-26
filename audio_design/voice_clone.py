@@ -2,9 +2,14 @@ import os
 import time
 import json
 import dashscope
-import pyaudio
 import contextlib
 from dashscope.audio.tts_v2 import VoiceEnrollmentService, SpeechSynthesizer, ResultCallback, AudioFormat
+
+# 懒加载 pyaudio（容器内 websocket 模式不需要本地播放）
+try:
+    import pyaudio as _pyaudio
+except ImportError:
+    _pyaudio = None
 
 # 全局配置（DashScope 凭据由 main 在调用前通过 utils.dashscope_runtime 设置）
 TARGET_MODEL = "cosyvoice-v3.5-flash"
@@ -31,9 +36,12 @@ class MyCallback(ResultCallback):
 
     def on_open(self):
         print("websocket is open.")
-        self._player = pyaudio.PyAudio()
+        if _pyaudio is None:
+            print("pyaudio 不可用，跳过本地音频播放（websocket 模式）")
+            return
+        self._player = _pyaudio.PyAudio()
         self._stream = self._player.open(
-            format=pyaudio.paInt16, channels=1, rate=22050, output=True
+            format=_pyaudio.paInt16, channels=1, rate=22050, output=True
         )
 
     def on_data(self, data: bytes) -> None:

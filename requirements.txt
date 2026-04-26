@@ -6,13 +6,17 @@ pydantic>=2.9.0
 # 阿里云百炼
 dashscope==1.25.15
 
-# 音频处理
-pyaudio==0.2.14
+# 音频处理（pyaudio 仅本地播放用，容器内走 websocket 模式不需要）
 pyyaml==6.0.1
 
 # 工具
 loguru==0.7.2
 python-multipart==0.0.6
+boto3
+psycopg2-binary
+requests
+websockets
+httpx
 
 # RAG相关
 chromadb>=0.6.0
