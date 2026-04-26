@@ -76,7 +76,7 @@ async def startup():
     try:
         await load_rag_config_async()
     except Exception as e:
-        logger.warning(f"启动时拉取 Spring RAG 配置失败，将使用本地 YAML 兜底：{e}")
+        logger.error(f"启动时拉取 Spring RAG 配置失败，将使用本地 YAML 兜底: {traceback.print_exc()}")
     warmup_rag()
 
 
@@ -106,7 +106,7 @@ def warmup_rag():
         logger.info(f"RAG服务预热完成，向量库文档数量: {doc_count}")
         RAG_WARMED = True
     except Exception as e:
-        logger.warning(f"RAG服务预热失败: {e}")
+        logger.warning(f"RAG服务预热失败: {traceback.print_exc()}")
         RAG_WARMED = False
 
 
@@ -177,8 +177,8 @@ async def start_stream(req: StartStreamRequest, background_tasks: BackgroundTask
             try:
                 await ws.send_bytes(data)
             except Exception as e:
-                logger.warning(
-                    f"会话{session_id} 音频 WS 发送失败已剔除客户端 ({len(data)} 字节, {type(e).__name__}: {e})"
+                logger.error(
+                    f"会话{session_id} 音频 WS 发送失败已剔除客户端 ({len(data)} 字节): {traceback.print_exc()}"
                 )
                 AUDIO_CLIENTS.get(session_id, set()).discard(ws)
 
@@ -224,7 +224,7 @@ async def start_stream(req: StartStreamRequest, background_tasks: BackgroundTask
                             break
                 await asyncio.sleep(1.0)
         except Exception as e:
-            logger.error(f"会话{session_id}直播循环异常：{traceback.format_exc()}")
+            logger.error(f"会话{session_id}直播循环异常: {traceback.print_exc()}")
         finally:
             await stop_session(StopSessionRequest(session_id=session_id))
 
@@ -254,7 +254,7 @@ async def start_stream(req: StartStreamRequest, background_tasks: BackgroundTask
 
                 await asyncio.sleep(0.5)
         except Exception as e:
-            logger.error(f"会话{session_id}弹幕处理循环异常：{traceback.format_exc()}")
+            logger.error(f"会话{session_id}弹幕处理循环异常: {traceback.print_exc()}")
         finally:
             await stop_session(StopSessionRequest(session_id=session_id))
 
@@ -300,7 +300,7 @@ async def live_danmu(req: LiveDanmuRequest, background_tasks: BackgroundTasks):
 
                 logger.info(f"弹幕处理完成，已缓存 {updated_cache_size} 条弹幕")
             except Exception as e:
-                logger.error(f"会话{req.session_id}后台处理弹幕互动异常：{traceback.format_exc()}")
+                logger.error(f"会话{req.session_id}后台处理弹幕互动异常: {traceback.print_exc()}")
 
         # 添加后台任务
         background_tasks.add_task(process_danmu_background)
@@ -308,7 +308,7 @@ async def live_danmu(req: LiveDanmuRequest, background_tasks: BackgroundTasks):
         # 立即返回，不等待处理完成
         return {"session_id": req.session_id, "status": "processing", "message": "弹幕处理已开始"}
     except Exception as e:
-        logger.error(f"会话{req.session_id}处理弹幕互动异常：{traceback.format_exc()}")
+        logger.error(f"会话{req.session_id}处理弹幕互动异常: {traceback.print_exc()}")
         return {"error": str(e)}
 
 
@@ -364,8 +364,8 @@ async def stop_session(req: StopSessionRequest):
 
     try:
         session["tts"].close()
-    except Exception:
-        logger.warning(f"会话{req.session_id} TTS 关闭异常", exc_info=True)
+    except Exception as e:
+        logger.error(f"会话{req.session_id} TTS 关闭异常: {traceback.print_exc()}")
 
     # 关闭音频 WS 客户端
     for ws in list(AUDIO_CLIENTS.pop(req.session_id, set())):
@@ -412,8 +412,8 @@ async def switch_voice_profile(req: SwitchVoiceProfileRequest):
             await session["tts"].switch_voice_with_transition(voice_id=None, profile_index=req.profile_index)
         else:
             session["tts"].switch_voice_by_profile(req.profile_index)
-    except Exception:
-        logger.error(f"切换 profile 失败: {traceback.format_exc()}")
+    except Exception as e:
+        logger.error(f"切换 profile 失败: {traceback.print_exc()}")
         return {"error": "切换失败"}
     return {"session_id": req.session_id, "status": "switching", "profile_index": req.profile_index}
 
@@ -444,7 +444,7 @@ async def update_config(req: UpdateConfigRequest):
             "config": redact_room_config_for_log(room_config),
         }
     except Exception as e:
-        logger.error(f"更新配置失败: {e}")
+        logger.error(f"更新配置失败: {traceback.print_exc()}")
         return {"error": str(e), "status": "failed"}
 
 
@@ -455,7 +455,7 @@ async def rag_status():
         status = get_vector_store_status()
         return {"status": "success", **status}
     except Exception as e:
-        logger.error(f"查询RAG状态失败: {e}")
+        logger.error(f"查询RAG状态失败: {traceback.print_exc()}")
         return {"error": str(e), "status": "failed"}
 
 
@@ -479,7 +479,7 @@ async def rebuild_rag_index(force: bool = True):
         logger.info(f"RAG向量库重建完成，文档数量: {doc_count}")
         return {"status": "success", "document_count": doc_count}
     except Exception as e:
-        logger.error(f"重建RAG向量库失败: {e}")
+        logger.error(f"重建RAG向量库失败: {traceback.print_exc()}")
         return {"error": str(e), "status": "failed"}
 
 
@@ -495,7 +495,7 @@ async def clear_rag_index():
         logger.info("RAG向量库已清空")
         return {"status": "success", "message": "向量库已清空"}
     except Exception as e:
-        logger.error(f"清空RAG向量库失败: {e}")
+        logger.error(f"清空RAG向量库失败: {traceback.print_exc()}")
         return {"error": str(e), "status": "failed"}
 
 
@@ -514,7 +514,7 @@ async def rag_search(q: str, top_k: int = 3):
             "answers": answers[:top_k]
         }
     except Exception as e:
-        logger.error(f"RAG检索失败: {e}")
+        logger.error(f"RAG检索失败: {traceback.print_exc()}")
         return {"error": str(e), "status": "failed"}
 
 
@@ -635,7 +635,7 @@ async def rag_decider_test(q: str):
             "reason": reason
         }
     except Exception as e:
-        logger.error(f"RAG触发判断测试失败: {e}")
+        logger.error(f"RAG触发判断测试失败: {traceback.print_exc()}")
         return {"error": str(e), "status": "failed"}
 
 
@@ -672,7 +672,7 @@ async def voice_clone(req: VoiceCloneRequest):
 
         return {"voice_id": voice_id, "status": "success"}
     except Exception as e:
-        logger.error(f"语音克隆失败: {e}")
+        logger.error(f"语音克隆失败: {traceback.print_exc()}")
         return {"error": str(e), "status": "failed"}
 
 
@@ -736,7 +736,7 @@ async def tts_synthesis(req: TTSRequest):
                 os.unlink(output_file)
                 logger.info(f"临时文件已删除: {output_file}")
             except Exception as e:
-                logger.error(f"上传到OSS失败: {e}")
+                logger.error(f"上传到OSS失败: {traceback.print_exc()}")
                 # 上传失败时保留本地文件并返回路径
                 result["audio_path"] = os.path.abspath(output_file)
         else:
@@ -744,7 +744,7 @@ async def tts_synthesis(req: TTSRequest):
 
         return result
     except Exception as e:
-        logger.error(f"出现异常: {e}")
+        logger.error(f"出现异常: {traceback.print_exc()}")
         return {"error": str(e), "status": "failed"}
 
 
