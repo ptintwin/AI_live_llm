@@ -39,6 +39,7 @@ class LLMLiveService:
         self.generation_type = None
         self.cycle_count = 0
         self.user_focus_cycle = 0
+        self.clear_history = False
 
         # §八.4.3 重构后，room_config 来自 Spring EffectiveConfigService，已完成所有合并。
         # 这里不再用 `or default` 兜底（会把用户显式设为 0 / 0.0 / "" 的值误吞为 falsy，即原 Bug-2）；
@@ -49,10 +50,10 @@ class LLMLiveService:
         self.max_cycle_focus = pick_int(rc, "maxCycleFocus", config["live"]["max_cycle_focus"])
 
         # Prompt 模板：房间配置优先，回退 prompts.py 默认值
-        system_prompt    = pick_str(rc, "systemPrompt",   SYSTEM_PROMPT)
-        live_background  = pick_str(rc, "liveBackground", CURRENT_LIVE_ROOM_PROMPT)
-        self.continue_prompt    = pick_str(rc, "continuePrompt",   CONTINUE_PROMPT)
-        self.interact_prompt    = pick_str(rc, "interactPrompt",   INTERACT_PROMPT)
+        system_prompt = pick_str(rc, "systemPrompt", SYSTEM_PROMPT)
+        live_background = pick_str(rc, "liveBackground", CURRENT_LIVE_ROOM_PROMPT)
+        self.continue_prompt = pick_str(rc, "continuePrompt", CONTINUE_PROMPT)
+        self.interact_prompt = pick_str(rc, "interactPrompt", INTERACT_PROMPT)
         self.danmu_level_prompt = pick_str(rc, "danmuLevelPrompt", DANMU_LEVEL_PROMPT)
 
         self.fixed_prefix_history = [
@@ -99,6 +100,51 @@ class LLMLiveService:
                     # 保留最后一条非assistant消息
                     self.history = [non_assistant_prev[-1]] + self.history
 
+    def _process_privacy_username(self, username: str) -> str:
+        """处理隐私屏蔽的username
+
+        Args:
+            username: 观众名（可能包含隐私屏蔽）
+
+        Returns:
+            处理后的username，如果包含隐私屏蔽则添加随机称谓
+        """
+        # 检查username是否包含隐私屏蔽（一个或多个*）
+        privacy_pattern = r'([^*]+)\*+'
+        match = re.search(privacy_pattern, username)
+
+        if match:
+            # 提取未屏蔽部分
+            visible_part = match.group(1)
+            # 随机称谓列表
+            nicknames = ['老板', '宝子', '老铁', '哥', '姐', '家人', '宝宝', '亲',]
+            random_nickname = random.choice(nicknames)
+            # 重新构建username：未屏蔽部分 + 随机称谓
+            return visible_part + random_nickname
+
+        return username
+
+    def _build_danmu_suffix(self, username: str, content: str) -> str:
+        """构建非question类型弹幕的后缀字符串
+
+        Args:
+            username: 观众名（可能包含隐私屏蔽）
+            content: 弹幕内容
+
+        Returns:
+            格式化后的后缀字符串
+        """
+        # 处理隐私屏蔽
+        username = self._process_privacy_username(username)
+
+        # 检查content是否以username开头
+        content = content.strip()
+        if content.startswith(username):
+            # 去除content中重复的username
+            content = content[len(username):]
+
+        return f"观众'{username}'{content}\n"
+
     async def _stream_llm_response(self, prompt: str, is_interact: bool, danmu_summary: str = "") -> AsyncGenerator[
         str, Any]:
         """通用LLM流式响应处理
@@ -116,6 +162,9 @@ class LLMLiveService:
         logger.info(f"会话{self.session_id}开始生成{self.generation_type}类型文本")
 
         # 构建用于发送给LLM的消息列表
+        if not is_interact and self.clear_history:
+            self.history = []
+            logger.info(f"已超过了最大“照顾观众交互”轮次{self.max_cycle_focus}次，清空历史记录表示不再“照顾交互”")
         messages = self.fixed_prefix_history + self.history.copy()
 
         # 对于最新的互动消息，保留完整的INTERACT_PROMPT用于LLM
@@ -239,6 +288,7 @@ class LLMLiveService:
         if self.user_focus_cycle > max_focus_cycle:
             # 超过了最大“照顾观众交互”轮次，置为0表示不再“照顾交互”
             self.user_focus_cycle = 0
+            self.clear_history = True
         if self.cycle_count > 1:
             prompt = self.continue_prompt
             if self.user_focus_cycle > 0:
@@ -288,8 +338,14 @@ class LLMLiveService:
 
             prefix_map = {'question': "【互动问题类】", 'gift': "【礼物灯牌类】", 'enter': "【进入直播间】",
                           'follow': "【关注或点赞类】"}
-            suffix_pmt = f"观众'{username}'：{content}\n" if danmu_type == 'question' else f"观众'{username}'{content}\n"
+            suffix_pmt = f"观众'{self._process_privacy_username(username)}'：{content}\n" if danmu_type == 'question' else \
+                                                                            self._build_danmu_suffix(username, content)
             danmu_summary += (prefix_map[danmu_type] + suffix_pmt)
+
+        if rag_hit_count > 0:
+            logger.info(f"RAG本次命中 {rag_hit_count} 个问题，已添加到prompt中")
+
+        danmu_summary += (prefix_map[danmu_type] + suffix_pmt)
 
         if rag_hit_count > 0:
             logger.info(f"RAG本次命中 {rag_hit_count} 个问题，已添加到prompt中")
@@ -325,10 +381,10 @@ class LLMLiveService:
         self.max_history = pick_int(rc, "maxHistory", config["llm"]["max_history"])
         self.max_cycle_focus = pick_int(rc, "maxCycleFocus", config["live"]["max_cycle_focus"])
 
-        system_prompt    = pick_str(rc, "systemPrompt",   SYSTEM_PROMPT)
-        live_background  = pick_str(rc, "liveBackground", CURRENT_LIVE_ROOM_PROMPT)
-        self.continue_prompt    = pick_str(rc, "continuePrompt",   CONTINUE_PROMPT)
-        self.interact_prompt    = pick_str(rc, "interactPrompt",   INTERACT_PROMPT)
+        system_prompt = pick_str(rc, "systemPrompt", SYSTEM_PROMPT)
+        live_background = pick_str(rc, "liveBackground", CURRENT_LIVE_ROOM_PROMPT)
+        self.continue_prompt = pick_str(rc, "continuePrompt", CONTINUE_PROMPT)
+        self.interact_prompt = pick_str(rc, "interactPrompt", INTERACT_PROMPT)
         self.danmu_level_prompt = pick_str(rc, "danmuLevelPrompt", DANMU_LEVEL_PROMPT)
 
         # 更新固定前缀历史

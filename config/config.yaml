@@ -24,7 +24,7 @@ tts:
   speech_rate: 1.2
   pitch_rate: 1.0
   stream: true
-  audio_mode: "websocket"  # websocket: 通过WebSocket推送到前端; pyaudio: 服务端直接播放
+  audio_mode: "pyaudio"  # websocket: 通过WebSocket推送到前端; pyaudio: 服务端直接播放
   # §四.2 Bug-8：单句 TTS 播报超时上限（秒）。
   # 实际超时 = min(playback_timeout_cap, 估算播放时长)，估算由收到的 PCM 字节数推导。
   playback_timeout_cap: 300.0

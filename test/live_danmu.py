@@ -75,31 +75,31 @@ async def test_live_danmu():
     # 第一次请求的弹幕列表（最高等级为"重要"类）
     first_danmu_list = [
         {
-            "username": "玩家1",
+            "username": "黑****",
             "content": "这个职业怎么加点？",  # 专业提问类（重要）
             "type": "question",
             "danmu_time": danmu_times[0]
         },
         {
-            "username": "玩家2",
+            "username": "向**",
             "content": "点亮了粉丝灯牌",  # 礼物灯牌类（重要）
             "type": "gift",
             "danmu_time": danmu_times[1]
         },
         {
-            "username": "玩家3",
+            "username": "累***",
             "content": "游戏内一天能赚多少钱？",  # 游戏相关普通问题（重要）
             "type": "question",
             "danmu_time": danmu_times[2]
         },
         {
-            "username": "玩家4",
+            "username": "五*",
             "content": "主播好厉害！",  # 其它闲聊问题（一般）
             "type": "question",
             "danmu_time": danmu_times[3]
         },
         {
-            "username": "玩家5",
+            "username": "娃******",
             "content": "来了",  # 进入直播间类（一般）
             "type": "enter",
             "danmu_time": danmu_times[4]
@@ -125,19 +125,19 @@ async def test_live_danmu():
     # 第二次请求的弹幕列表（最高等级为"非常重要"类）
     second_danmu_list = [
         {
-            "username": "玩家6",
+            "username": "张**",
             "content": "怎么下载游戏？",  # 下载类问题（非常重要）
             "type": "question",
             "danmu_time": second_danmu_times[0]
         },
         {
-            "username": "玩家7",
+            "username": "玩***",
             "content": "充值有什么优惠？",  # 充值类问题（非常重要）
             "type": "question",
             "danmu_time": second_danmu_times[1]
         },
         {
-            "username": "玩家8",
+            "username": "我*",
             "content": "送出了超级火箭",  # 礼物灯牌类（重要）
             "type": "gift",
             "danmu_time": second_danmu_times[2]
